@@ -1,0 +1,577 @@
+package com.colony.agent;
+
+import jade.core.Agent;
+import jade.core.behaviours.CyclicBehaviour;
+import jade.core.behaviours.OneShotBehaviour;
+import jade.core.behaviours.TickerBehaviour;
+import jade.lang.acl.ACLMessage;
+import jade.core.AID;
+import com.colony.model.*;
+import com.colony.model.ColonyMap.ColonyBuilding;
+import com.colony.Main;
+import java.util.*;
+
+public class WorkerAgent extends Agent {
+    private String npcName;
+    private String workerType;
+    private int health = 100;
+    private int energy = 100;
+    private DwarfSkills skills = new DwarfSkills();
+    private SkillType primarySkill;
+    private boolean regAnalyst = false;
+    private boolean regManager = false;
+    private String currentTaskId = null;
+    private int ticksWorked = 0;
+    private int npcX = ColonyMap.WIDTH / 2 + (int)(Math.random() * 12 - 6);
+    private int npcY = ColonyMap.HEIGHT / 2 + (int)(Math.random() * 12 - 6);
+    private int targetX = npcX, targetY = npcY;
+    private boolean hasHouse = false;
+    private boolean hasWorkshop = false;
+    private int taskTargetX = -1, taskTargetY = -1;
+    private String taskTargetBuilding; // building type name for construction tasks
+    private long currentTaskDeadline = 0L;
+    private int currentTaskUrgency = 1;
+    private boolean currentTaskCorrection = false;
+
+    // Tipos de trabalho que NÃO precisam de construção
+    private static final Set<String> RAW_TASKS = Set.of(
+        "mine", "mining", "dig", "woodcut", "woodcutting", "chop",
+        "harvest", "gather", "collect", "fish", "fishing", "water"
+    );
+
+    protected void setup() {
+        Object[] args = getArguments();
+        if (args != null && args.length > 0) {
+            this.workerType = args[0].toString();
+        } else {
+            this.workerType = "general";
+        }
+        this.npcName = getLocalName();
+        this.primarySkill = initSkills();
+
+        System.out.println(npcName + ": " + traduzirTipo(workerType) + " iniciado"
+            + " | HP:" + health + " EN:" + energy
+            + " | Skill: " + primarySkill.getDisplayName()
+            + " (" + skills.getRank(primarySkill) + " lv" + skills.getLevel(primarySkill) + ")");
+
+        addBehaviour(new CyclicBehaviour() {
+            public void action() {
+                if (!regAnalyst) {
+                    ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
+                    m.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+                    m.setContent("REGISTER_SKILL:" + npcName + ":" + primarySkill.getKey());
+                    send(m);
+                }
+                if (!regManager) {
+                    ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
+                    m.addReceiver(new AID("manager", AID.ISLOCALNAME));
+                    m.setContent("REGISTER_WORKER");
+                    send(m);
+                }
+
+                ACLMessage msg = receive();
+                if (msg != null) {
+                    String content = msg.getContent();
+                    String sender = msg.getSender().getLocalName();
+
+                    if ("REGISTERED".equals(content)) {
+                        if (sender.equals("analyst") && !regAnalyst) {
+                            regAnalyst = true;
+                            regComplete();
+                        } else if (sender.equals("manager") && !regManager) {
+                            regManager = true;
+                            regComplete();
+                        }
+                    }
+                    else if (content.startsWith("ASSIGN_TASK:")) {
+                        String[] p = content.split(":");
+                        String taskId = p[1];
+                        String taskType = p[2];
+                        taskTargetX = -1; taskTargetY = -1; taskTargetBuilding = null;
+                        if (p.length >= 6) {
+                            try {
+                                taskTargetX = Integer.parseInt(p[3]);
+                                taskTargetY = Integer.parseInt(p[4]);
+                                taskTargetBuilding = "NONE".equals(p[5]) ? null : p[5];
+                            } catch (NumberFormatException e) {}
+                        }
+                        currentTaskDeadline = p.length >= 7 ? parseLong(p[6], 0L) : 0L;
+                        currentTaskUrgency = p.length >= 8 ? parseInt(p[7], 1) : 1;
+                        currentTaskCorrection = p.length >= 9 && Boolean.parseBoolean(p[8]);
+                        acceptTask(taskId, taskType);
+                    }
+                } else {
+                    block(300);
+                }
+            }
+        });
+
+        addBehaviour(new CyclicBehaviour() {
+            public void action() {
+                if (regManager && currentTaskId == null) {
+                    autoAct();
+                }
+                block(3000);
+            }
+        });
+
+        // Periodic info report to manager
+        addBehaviour(new TickerBehaviour(this, 5000) {
+            protected void onTick() {
+                if (regManager) {
+                    sendInfoToManager();
+                }
+            }
+        });
+    }
+
+    private void regComplete() {
+        if (regAnalyst && regManager) {
+            Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+            sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
+            sendGui("WORKER_STATUS:" + npcName + ":" + primarySkill.getKey()
+                + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill) + ":ocioso:" + energy);
+            sendWorkerDetails();
+            sendGui("LOG:" + npcName + " (" + traduzirTipo(workerType) + ") registrado.");
+        }
+    }
+
+    private SkillType initSkills() {
+        Random rand = new Random();
+        String[][] pools = {
+            {"Wood cutter"}, {"Carpenter", "Bowyer", "Wood crafter"},
+            {"Miner", "Stonecutter"}, {"Mason", "Stone carver", "Engraver", "Stone crafter"},
+            {"Blacksmith", "Armorsmith", "Weaponsmith", "Furnace operator", "Metal crafter"},
+            {"Planter", "Cook", "Brewer", "Butcher", "Herbalist"},
+            {"Diagnostician", "Surgeon", "Bone doctor"},
+            {"Fighter", "Axeman", "Shield user", "Dodger", "Wrestler"},
+            {"Mechanic", "Siege engineer"},
+            {"Gem cutter", "Gem setter", "Bone carver", "Potter", "Weaver", "Clothier", "Glassmaker"},
+            {"Fisherdwarf", "Fish cleaner"},
+            {"Trapper", "Animal caretaker", "Animal trainer"},
+        };
+        int idx = switch (workerType) {
+            case "woodcutter" -> 0;
+            case "builder", "carpenter" -> 1;
+            case "miner" -> 2;
+            case "mason", "stonemason", "marbleworker", "marmorist" -> 3;
+            case "smith" -> 4;
+            case "farmer" -> 5;
+            case "doctor" -> 6;
+            case "fighter" -> 7;
+            case "engineer" -> 8;
+            case "craftsman" -> 9;
+            case "fisher" -> 10;
+            default -> rand.nextInt(pools.length);
+        };
+        String[] skillPool = pools[Math.min(idx, pools.length - 1)];
+        SkillType primary = null;
+        for (String sk : skillPool) {
+            SkillType st = SkillType.fromKey(sk);
+            if (st != null) {
+                skills.setLevel(st, 1 + rand.nextInt(3));
+                if (primary == null) primary = st;
+            }
+        }
+        if ("marbleworker".equals(workerType) || "marmorist".equals(workerType)) {
+            primary = SkillType.STONE_CARVER;
+            skills.setLevel(primary, 2 + rand.nextInt(2));
+        }
+        if (primary == null) { primary = SkillType.WOOD_CUTTER; skills.setLevel(primary, 1); }
+        return primary;
+    }
+
+    private void acceptTask(String taskId, String taskType) {
+        String t = taskType.toLowerCase();
+        boolean isRaw = RAW_TASKS.stream().anyMatch(t::contains);
+
+        // Rejeita se estiver muito cansado
+        if (energy < 15) {
+            sendGui("LOG:" + npcName + " está exausto (energia=" + energy + "), rejeitou tarefa");
+            sendReject(taskId);
+            return;
+        }
+
+        // Verifica se precisa de oficina e não tem
+        if (!isRaw && !t.contains("build")) {
+            BuildingType needed = workshopTypeForTask(taskType);
+            if (needed != null && !hasCompletedBuilding(needed)) {
+                sendGui("LOG:" + npcName + " não tem oficina de " + needed.getName()
+                    + ", rejeitou tarefa");
+                sendReject(taskId);
+                return;
+            }
+        }
+
+        SkillType taskSkill = DwarfSkills.inferFromTaskType(taskType);
+        if (taskSkill == null) taskSkill = primarySkill;
+
+        if (skills.getLevel(taskSkill) == 0) {
+            skills.setLevel(taskSkill, 1);
+            sendGui("LOG:" + npcName + " aprendeu " + taskSkill.getDisplayName() + " (nível 1)");
+        }
+
+        currentTaskId = taskId;
+        int skLv = skills.getLevel(taskSkill);
+        sendGui("WORKER_STATUS:" + npcName + ":" + taskSkill.getKey()
+            + ":" + skLv + ":" + skills.getRank(taskSkill) + ":ocupado:" + energy);
+        String correctionText = currentTaskCorrection ? "correção de " : "";
+        sendGui("LOG:" + npcName + " começou " + correctionText + taskSkill.getDisplayName()
+            + " (" + skills.getRank(taskSkill) + " lv" + skLv + ", urgência " + currentTaskUrgency + ")");
+
+        final SkillType finalSkill = taskSkill;
+        addBehaviour(new OneShotBehaviour() {
+            public void action() { workOnTask(taskId, finalSkill, taskType); }
+        });
+    }
+
+    private void sendReject(String taskId) {
+        try {
+            ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+            msg.addReceiver(new AID("manager", AID.ISLOCALNAME));
+            msg.setContent("TASK_REJECTED:" + taskId);
+            send(msg);
+            currentTaskId = null;
+            currentTaskCorrection = false;
+        } catch (Exception ignored) {}
+    }
+
+    private BuildingType workshopTypeForTask(String taskType) {
+        if (taskType == null) return null;
+        String t = taskType.toLowerCase();
+        if (t.contains("carpenter") || t.contains("bowyer") || t.contains("wood craft")) return BuildingType.CARPENTER;
+        if (t.contains("mason") || t.contains("stone") || t.contains("engrave")) return BuildingType.MASON;
+        if (t.contains("smith") || t.contains("forge") || t.contains("furnace")) return BuildingType.SMITH;
+        if (t.contains("craft") || t.contains("potter") || t.contains("bone") || t.contains("weaver")) return BuildingType.CRAFTER;
+        if (t.contains("cook") || t.contains("brew") || t.contains("butcher")) return BuildingType.KITCHEN;
+        if (t.contains("diagnos") || t.contains("surgeon") || t.contains("bone doctor")) return BuildingType.HOSPITAL;
+        if (t.contains("farm") || t.contains("plant")) return BuildingType.FARM;
+        return null;
+    }
+
+    private void workOnTask(String taskId, SkillType taskSkill, String taskType) {
+        ColonyMap map = Main.colonyMap;
+        Random rand = new Random();
+        String t = taskType.toLowerCase();
+        boolean isRaw = RAW_TASKS.stream().anyMatch(t::contains);
+
+        int workX, workY;
+        int actionX = -1, actionY = -1;
+        if (isRaw) {
+            int[] rawTile = findRawWorkTile(taskType);
+            actionX = rawTile[0];
+            actionY = rawTile[1];
+            int[] openTile = map.findNearestOpenTile(actionX, actionY);
+            workX = openTile[0];
+            workY = openTile[1];
+        } else if (taskTargetX >= 0 && taskTargetY >= 0) {
+            ColonyBuilding target = map.getBuildingAt(taskTargetX, taskTargetY);
+            if (target != null) {
+                int centerX = target.getX() + target.getType().getWidth() / 2;
+                int centerY = target.getY() + target.getType().getHeight() / 2;
+                int[] openTile = map.findNearestOpenTile(centerX, centerY);
+                workX = openTile[0];
+                workY = openTile[1];
+            } else {
+                workX = taskTargetX;
+                workY = taskTargetY;
+            }
+        } else {
+            ColonyBuilding workshop = null;
+            for (BuildingType bt : BuildingType.values()) {
+                workshop = map.findNearestUnowned(bt, npcX, npcY);
+                if (workshop != null) break;
+            }
+            if (workshop != null) {
+                workX = workshop.getX() + workshop.getType().getWidth()/2;
+                workY = workshop.getY() + workshop.getType().getHeight()/2;
+            } else {
+                workX = npcX + rand.nextInt(11) - 5;
+                workY = npcY + rand.nextInt(11) - 5;
+            }
+        }
+        workX = Math.max(1, Math.min(ColonyMap.WIDTH - 2, workX));
+        workY = Math.max(1, Math.min(ColonyMap.HEIGHT - 2, workY));
+        moveTowards(workX, workY);
+
+        int duration = 1000 + rand.nextInt(2000);
+        int xpGain = 30 + rand.nextInt(80);
+
+        System.out.println(npcName + ": " + taskSkill.getDisplayName()
+            + " (lv" + skills.getLevel(taskSkill) + ")");
+
+        // Execute task
+        if (isRaw && map.inBounds(actionX, actionY)) {
+            TerrainTile tile = map.getTile(actionX, actionY);
+            if (tile == TerrainTile.TREE && t.contains("wood")) {
+                map.setTile(actionX, actionY, TerrainTile.GRASS);
+            } else if ((tile == TerrainTile.STONE || tile == TerrainTile.MOUNTAIN)
+                    && (t.contains("mine") || t.contains("dig"))) {
+                map.setTile(actionX, actionY, TerrainTile.DIRT);
+            }
+            sendGui("BUILD_UPDATE:" + actionX + ":" + actionY);
+        } else if (taskTargetX >= 0 && taskTargetY >= 0) {
+            // Building construction: work on the target building
+            ColonyBuilding target = map.getBuildingAt(taskTargetX, taskTargetY);
+            if (target != null && target.getProgress() < 100) {
+                int progressGain = 20 + Math.min(15, skills.getLevel(taskSkill) * 3) + currentTaskUrgency;
+                target.setProgress(target.getProgress() + progressGain);
+                sendGui("LOG:" + npcName + " construiu " + target.getType().getName()
+                    + " (" + target.getProgress() + "%) em (" + taskTargetX + "," + taskTargetY + ")");
+                sendGui("BUILD_UPDATE:" + taskTargetX + ":" + taskTargetY);
+            }
+            if (taskTargetBuilding != null) {
+                BuildingType bt = BuildingType.valueOf(taskTargetBuilding);
+                if (bt == BuildingType.HOUSE && !hasHouse && target != null && target.getProgress() >= 100) {
+                    map.assignHome(npcName, target);
+                    hasHouse = true;
+                    sendGui("LOG:" + npcName + " agora tem casa!");
+                } else if (!hasWorkshop && target != null && target.getProgress() >= 100) {
+                    hasWorkshop = true;
+                    sendGui("LOG:" + npcName + " agora tem " + target.getType().getName());
+                }
+            }
+        } else if (!isRaw) {
+            map.buildProgress(npcName, npcX, npcY);
+            sendGui("BUILD_UPDATE:-1:-1");
+        }
+
+        int energyCost = 10 + rand.nextInt(6);
+        energy = Math.max(0, energy - energyCost);
+        ticksWorked++;
+        sleep(Math.min(duration, 1500));
+
+        int lvGain = skills.addXp(taskSkill, xpGain);
+        int newLv = skills.getLevel(taskSkill);
+
+        sendGui("LOG:" + npcName + " " + (isRaw ? "coletou" : "produziu") + " em (" + npcX + "," + npcY + ")"
+            + " (-" + energyCost + " EN, restam " + energy + ") (+" + xpGain + " XP " + taskSkill.getDisplayName()
+            + " lv" + newLv + " " + skills.getRank(taskSkill) + ")");
+        if (lvGain > 0) {
+            sendGui("LOG:" + npcName + " SUBIU " + taskSkill.getDisplayName()
+                + " para nível " + newLv + " (" + skills.getRank(taskSkill) + ")!");
+        }
+
+        int progress = 100;
+        if (taskTargetX >= 0 && taskTargetY >= 0) {
+            ColonyBuilding target = map.getBuildingAt(taskTargetX, taskTargetY);
+            progress = target != null ? target.getProgress() : 0;
+        }
+
+        boolean late = currentTaskDeadline > 0 && System.currentTimeMillis() > currentTaskDeadline;
+        ACLMessage done = new ACLMessage(ACLMessage.INFORM);
+        done.addReceiver(new AID("manager", AID.ISLOCALNAME));
+        String messageType = late ? "TASK_TIMEOUT:" : "TASK_COMPLETE:";
+        int reportX = isRaw ? actionX : npcX;
+        int reportY = isRaw ? actionY : npcY;
+        done.setContent(messageType + taskId + "|" + reportX + "|" + reportY + "|" + progress + "|" + taskType);
+        send(done);
+        if (late) {
+            sendGui("LOG:" + npcName + " avisou estouro de prazo na tarefa " + taskId);
+        }
+
+        currentTaskId = null;
+        currentTaskCorrection = false;
+        sendGui("WORKER_STATUS:" + npcName + ":" + taskSkill.getKey()
+            + ":" + newLv + ":" + skills.getRank(taskSkill) + ":ocioso:" + energy);
+    }
+
+    private void autoAct() {
+        ColonyMap map = Main.colonyMap;
+        Random rand = new Random();
+
+        // Descansa se estiver com pouca energia (prioridade)
+        if (energy <= 30) {
+            ColonyBuilding home = map.getHome(npcName);
+            if (home != null) {
+                moveTowards(home.getX() + 1, home.getY() + 1);
+            }
+            int restAmount = 10 + rand.nextInt(15);
+            energy = Math.min(100, energy + restAmount);
+            sendGui("LOG:" + npcName + " descansou (+" + restAmount + " EN, agora " + energy + "/100)");
+            sleep(1000);
+            return;
+        }
+
+        // Anda pelo mapa (só se tiver energia)
+        if (energy > 40 && rand.nextInt(4) == 0) {
+            int dx = rand.nextInt(11) - 5;
+            int dy = rand.nextInt(11) - 5;
+            int nx = Math.max(1, Math.min(ColonyMap.WIDTH - 2, npcX + dx));
+            int ny = Math.max(1, Math.min(ColonyMap.HEIGHT - 2, npcY + dy));
+            if (!map.getTile(nx, ny).isBlocksMovement() && map.getBuildingAt(nx, ny) == null) {
+                moveTowards(nx, ny);
+            }
+        }
+
+        if (energy > 60) {
+            SkillType lowest = skills.getLowestSkill();
+            if (lowest != null && skills.getLevel(lowest) < 5) {
+                int xp = 10 + rand.nextInt(15);
+                int lv = skills.addXp(lowest, xp);
+                if (lv > 0) sendGui("LOG:" + npcName + " SUBIU " + lowest.getDisplayName()
+                    + " para nível " + skills.getLevel(lowest) + "!");
+            }
+            energy = Math.max(0, energy - 5);
+        }
+    }
+
+    private int[] findRawWorkTile(String taskType) {
+        ColonyMap map = Main.colonyMap;
+        String type = taskType.toLowerCase();
+        TerrainTile firstChoice = type.contains("wood") ? TerrainTile.TREE : TerrainTile.STONE;
+        TerrainTile secondChoice = type.contains("wood") ? TerrainTile.TREE : TerrainTile.MOUNTAIN;
+
+        for (int radius = 1; radius <= 80; radius++) {
+            for (int offsetY = -radius; offsetY <= radius; offsetY++) {
+                for (int offsetX = -radius; offsetX <= radius; offsetX++) {
+                    if (Math.abs(offsetX) != radius && Math.abs(offsetY) != radius) continue;
+
+                    int candidateX = npcX + offsetX;
+                    int candidateY = npcY + offsetY;
+                    if (!map.inBounds(candidateX, candidateY)) continue;
+
+                    TerrainTile tile = map.getTile(candidateX, candidateY);
+                    if (tile == firstChoice || tile == secondChoice) {
+                        return new int[]{candidateX, candidateY};
+                    }
+                }
+            }
+        }
+
+        return new int[]{
+            Math.max(1, Math.min(ColonyMap.WIDTH - 2, npcX)),
+            Math.max(1, Math.min(ColonyMap.HEIGHT - 2, npcY))
+        };
+    }
+
+    private boolean hasCompletedBuilding(BuildingType type) {
+        for (ColonyBuilding building : Main.colonyMap.getBuildings()) {
+            if (building.getType() == type && building.getProgress() >= 100) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void moveTowards(int tx, int ty) {
+        targetX = tx; targetY = ty;
+        int steps = 0;
+        while ((npcX != targetX || npcY != targetY) && steps < 60) {
+            int dx = Integer.compare(targetX, npcX);
+            int dy = Integer.compare(targetY, npcY);
+            int[][] candidates = {
+                {npcX + dx, npcY},
+                {npcX, npcY + dy},
+                {npcX + dx, npcY + dy}
+            };
+
+            int nextX = npcX;
+            int nextY = npcY;
+            boolean foundStep = false;
+            for (int[] candidate : candidates) {
+                if (candidate[0] == npcX && candidate[1] == npcY) continue;
+                if (Main.colonyMap.inBounds(candidate[0], candidate[1])
+                        && !Main.colonyMap.getTile(candidate[0], candidate[1]).isBlocksMovement()) {
+                    nextX = candidate[0];
+                    nextY = candidate[1];
+                    foundStep = true;
+                    break;
+                }
+            }
+
+            if (!foundStep) {
+                break;
+            }
+
+            npcX = nextX;
+            npcY = nextY;
+            Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+            sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
+            steps++;
+            sleep(80);
+        }
+        Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+        sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
+    }
+
+    private void sleep(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) {}
+    }
+
+    private int parseInt(String value, int fallback) {
+        try {
+            return Integer.parseInt(value);
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private long parseLong(String value, long fallback) {
+        try {
+            return Long.parseLong(value);
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private void sendWorkerDetails() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("WORKER_DETAILS:").append(npcName)
+          .append("|").append(health)
+          .append("|").append(energy)
+          .append("|").append(workerType);
+        for (DwarfSkills.SkillEntry se : skills.getAllSkills()) {
+            sb.append("|").append(se.skill.getKey()).append("~").append(se.level);
+        }
+        sendGui(sb.toString());
+    }
+
+    private void sendInfoToManager() {
+        try {
+            hasHouse = hasHouse || Main.colonyMap.hasHome(npcName);
+            BuildingType primaryWorkshop = workshopTypeForTask(primarySkill.getKey());
+            if (primaryWorkshop != null) {
+                hasWorkshop = hasCompletedBuilding(primaryWorkshop);
+            }
+            String info = "WORKER_INFO:" + npcName + "|" + primarySkill.getKey()
+                + "|" + skills.getLevel(primarySkill) + "|" + npcX + "|" + npcY + "|" + energy
+                + "|" + (hasHouse ? "1" : "0") + "|" + (hasWorkshop ? "1" : "0");
+            ACLMessage toManager = new ACLMessage(ACLMessage.INFORM);
+            toManager.addReceiver(new AID("manager", AID.ISLOCALNAME));
+            toManager.setContent(info);
+            send(toManager);
+            ACLMessage toAnalyst = new ACLMessage(ACLMessage.INFORM);
+            toAnalyst.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+            toAnalyst.setContent(info);
+            send(toAnalyst);
+            // Atualiza energia na GUI
+            String status = (currentTaskId != null) ? "ocupado" : "ocioso";
+            sendGui("WORKER_STATUS:" + npcName + ":" + primarySkill.getKey()
+                + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill)
+                + ":" + status + ":" + energy);
+        } catch (Exception ignored) {}
+    }
+
+    private void sendGui(String content) {
+        try {
+            ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+            msg.addReceiver(new AID("gui", AID.ISLOCALNAME));
+            msg.setContent(content);
+            send(msg);
+        } catch (Exception ignored) {}
+    }
+
+    private String traduzirTipo(String type) {
+        return switch (type.toLowerCase()) {
+            case "builder" -> "Construtor"; case "miner" -> "Mineiro";
+            case "woodcutter" -> "Lenhador"; case "carpenter" -> "Carpinteiro";
+            case "smith" -> "Ferreiro";
+            case "farmer" -> "Fazendeiro"; case "doctor" -> "Médico";
+            case "fighter" -> "Guerreiro"; case "craftsman" -> "Artesão";
+            case "engineer" -> "Engenheiro"; case "mason", "stonemason" -> "Pedreiro";
+            case "marbleworker", "marmorist" -> "Marmorista";
+            case "fisher" -> "Pescador"; default -> "Geral";
+        };
+    }
+}
