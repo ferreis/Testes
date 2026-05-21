@@ -277,12 +277,21 @@ public class WorkerAgent extends Agent {
                 workY = taskTargetY;
             }
         } else {
-            ColonyBuilding workshop = null;
-            for (BuildingType bt : BuildingType.values()) {
-                workshop = map.findNearestUnowned(bt, npcX, npcY);
-                if (workshop != null) break;
-            }
+            BuildingType bt = workshopTypeForTask(taskType);
+            ColonyBuilding workshop = map.findNearestUnowned(bt, npcX, npcY);
             if (workshop != null) {
+                // Fetch materials from stockpile first
+                ColonyBuilding stockpile = map.findNearestUnowned(BuildingType.STOCKPILE, npcX, npcY);
+                if (stockpile != null) {
+                    sendGui("LOG:" + npcName + " está buscando materiais no armazém...");
+                    int stx = stockpile.getX() + stockpile.getType().getWidth()/2;
+                    int sty = stockpile.getY() + stockpile.getType().getHeight()/2;
+                    moveTowards(stx, sty);
+                    sleep(500); // Pegando recursos
+                } else {
+                    sendGui("LOG:" + npcName + " precisava de materiais mas não há depósito!");
+                }
+
                 workX = workshop.getX() + workshop.getType().getWidth()/2;
                 workY = workshop.getY() + workshop.getType().getHeight()/2;
             } else {
@@ -384,12 +393,25 @@ public class WorkerAgent extends Agent {
         if (energy <= 30) {
             ColonyBuilding home = map.getHome(npcName);
             if (home != null) {
-                moveTowards(home.getX() + 1, home.getY() + 1);
+                int hx = home.getX() + home.getType().getWidth() / 2;
+                int hy = home.getY() + home.getType().getHeight() / 2;
+                moveTowards(hx, hy);
+                
+                if (npcX == hx && npcY == hy) {
+                    int restAmount = 10 + rand.nextInt(15);
+                    energy = Math.min(100, energy + restAmount);
+                    sendGui("LOG:" + npcName + " descansou em sua casa (+" + restAmount + " EN, agora " + energy + "/100)");
+                    sleep(1000);
+                } else {
+                    sendGui("LOG:" + npcName + " não conseguiu chegar em casa para dormir!");
+                    sleep(1000);
+                }
+            } else {
+                sendGui("LOG:" + npcName + " não tem casa e dormiu no relento!");
+                int restAmount = 5 + rand.nextInt(10);
+                energy = Math.min(100, energy + restAmount);
+                sleep(1500);
             }
-            int restAmount = 10 + rand.nextInt(15);
-            energy = Math.min(100, energy + restAmount);
-            sendGui("LOG:" + npcName + " descansou (+" + restAmount + " EN, agora " + energy + "/100)");
-            sleep(1000);
             return;
         }
 
@@ -456,43 +478,21 @@ public class WorkerAgent extends Agent {
 
     private void moveTowards(int tx, int ty) {
         targetX = tx; targetY = ty;
-        int steps = 0;
-        while ((npcX != targetX || npcY != targetY) && steps < 60) {
-            int dx = Integer.compare(targetX, npcX);
-            int dy = Integer.compare(targetY, npcY);
-            int[][] candidates = {
-                {npcX + dx, npcY},
-                {npcX, npcY + dy},
-                {npcX + dx, npcY + dy}
-            };
-
-            int nextX = npcX;
-            int nextY = npcY;
-            boolean foundStep = false;
-            for (int[] candidate : candidates) {
-                if (candidate[0] == npcX && candidate[1] == npcY) continue;
-                if (Main.colonyMap.inBounds(candidate[0], candidate[1])
-                        && !Main.colonyMap.getTile(candidate[0], candidate[1]).isBlocksMovement()) {
-                    nextX = candidate[0];
-                    nextY = candidate[1];
-                    foundStep = true;
-                    break;
-                }
+        List<int[]> path = Main.colonyMap.findPath(npcX, npcY, targetX, targetY);
+        
+        if (path != null && !path.isEmpty()) {
+            for (int[] step : path) {
+                npcX = step[0];
+                npcY = step[1];
+                Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+                sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
+                sleep(80);
             }
-
-            if (!foundStep) {
-                break;
-            }
-
-            npcX = nextX;
-            npcY = nextY;
+        } else {
+            // Fallback (for example if already there or no path)
             Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
             sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
-            steps++;
-            sleep(80);
         }
-        Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
-        sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
     }
 
     private void sleep(int ms) {

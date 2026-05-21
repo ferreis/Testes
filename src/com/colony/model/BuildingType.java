@@ -1,7 +1,7 @@
 package com.colony.model;
 
 public enum BuildingType {
-    HOUSE("Casa", 3, 3, false, "residencial"),
+    HOUSE("Casa", 3, 3, true, "residencial"),
     CARPENTER("Oficina de Carpintaria", 5, 4, true, "industrial"),
     MASON("Oficina de Alvenaria", 5, 4, true, "industrial"),
     SMITH("Forja", 5, 4, true, "industrial"),

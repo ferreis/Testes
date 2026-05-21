@@ -12,14 +12,18 @@ import java.util.List;
 public class ColonyGUI {
     private final JFrame frame;
     private final DefaultTableModel workerModel;
-    private final DefaultTableModel taskModel;
+    private final DefaultTableModel taskWaitModel;
+    private final DefaultTableModel taskActiveModel;
+    private final DefaultTableModel taskDoneModel;
     private final JTextArea logArea;
     private final JTextArea resourceArea;
     private final JLabel statusLabel;
+    private final JLabel statsLabel;
     private final MapPanel mapPanel;
     private final ColonyMap colonyMap;
     private final Map<String, String> workerDetails;
     private final JTable workerTable;
+    private int totalTasks = 0;
 
     public ColonyGUI() {
         colonyMap = Main.colonyMap;
@@ -66,7 +70,6 @@ public class ColonyGUI {
         workerTable = new JTable(workerModel);
         workerTable.setFillsViewportHeight(true);
         workerTable.setRowHeight(22);
-        // Tooltip nas linhas
         workerTable.addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
             public void mouseMoved(java.awt.event.MouseEvent e) {
                 int row = workerTable.rowAtPoint(e.getPoint());
@@ -81,15 +84,34 @@ public class ColonyGUI {
         workerScroll.setBorder(BorderFactory.createTitledBorder("Trabalhadores"));
         tabs.addTab("Trabalhadores", workerScroll);
 
-        // ---- TASKS TAB ----
-        taskModel = new DefaultTableModel(new String[]{"ID Tarefa", "Tipo", "Status"}, 0) {
+        // ---- TASKS TAB (SubTabs) ----
+        JTabbedPane tasksSubTabs = new JTabbedPane();
+        
+        taskWaitModel = new DefaultTableModel(new String[]{"ID Tarefa", "Tipo", "Status"}, 0) {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
-        JTable taskTable = new JTable(taskModel);
-        taskTable.setFillsViewportHeight(true);
-        JScrollPane taskScroll = new JScrollPane(taskTable);
-        taskScroll.setBorder(BorderFactory.createTitledBorder("Tarefas"));
-        tabs.addTab("Tarefas", taskScroll);
+        JTable waitTable = new JTable(taskWaitModel);
+        waitTable.setFillsViewportHeight(true);
+        tasksSubTabs.addTab("Em Espera", new JScrollPane(waitTable));
+
+        taskActiveModel = new DefaultTableModel(new String[]{"ID Tarefa", "Tipo", "Status"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        JTable activeTable = new JTable(taskActiveModel);
+        activeTable.setFillsViewportHeight(true);
+        tasksSubTabs.addTab("Sendo Feitas", new JScrollPane(activeTable));
+
+        taskDoneModel = new DefaultTableModel(new String[]{"ID Tarefa", "Tipo", "Status"}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+        JTable doneTable = new JTable(taskDoneModel);
+        doneTable.setFillsViewportHeight(true);
+        tasksSubTabs.addTab("Concluídas", new JScrollPane(doneTable));
+
+        JPanel tasksPanel = new JPanel(new BorderLayout());
+        tasksPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+        tasksPanel.add(tasksSubTabs, BorderLayout.CENTER);
+        tabs.addTab("Tarefas", tasksPanel);
 
         // ---- RESOURCES TAB ----
         resourceArea = new JTextArea();
@@ -117,11 +139,11 @@ public class ColonyGUI {
         // ── Bottom stats bar ──
         JPanel bottom = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
         bottom.setBackground(new Color(50, 50, 60));
-        JLabel lbl = new JLabel(" Trabalhadores: 0  |  Tarefas: 0  |  Mapa: "
+        statsLabel = new JLabel(" Trabalhadores: 0  |  Tarefas: 0  |  Mapa: "
                 + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.6");
-        lbl.setForeground(Color.LIGHT_GRAY);
-        lbl.setFont(new Font("Monospaced", Font.PLAIN, 11));
-        bottom.add(lbl);
+        statsLabel.setForeground(Color.LIGHT_GRAY);
+        statsLabel.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        bottom.add(statsLabel);
         frame.add(bottom, BorderLayout.SOUTH);
 
         frame.setVisible(true);
@@ -135,6 +157,13 @@ public class ColonyGUI {
 
     public MapPanel getMapPanel() { return mapPanel; }
 
+    private void updateStats() {
+        int w = workerModel.getRowCount();
+        statsLabel.setText(" Trabalhadores: " + w + "  |  Tarefas (Total): " + totalTasks + "  |  Mapa: "
+                + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.6");
+        statusLabel.setText(" Trabalhadores Ativos: " + w + "  |  Tarefas na Fila: " + taskWaitModel.getRowCount());
+    }
+
     public void updateWorker(String name, String skill, String level,
                                String rank, String status, String energia) {
         SwingUtilities.invokeLater(() -> {
@@ -146,14 +175,13 @@ public class ColonyGUI {
                     workerModel.setValueAt(rank, i, 4);
                     workerModel.setValueAt(status, i, 5);
                     workerModel.setValueAt(energia, i, 6);
+                    updateStats();
                     return;
                 }
             }
             String type = traduzirTipo(skill);
             workerModel.addRow(new Object[]{name, type, skillPt, level, rank, status, energia});
-            statusLabel.setText(" Trabalhadores: " + workerModel.getRowCount()
-                    + "  |  Tarefas: " + taskModel.getRowCount()
-                    + "  |  Último: " + name + " " + status);
+            updateStats();
         });
     }
 
@@ -175,16 +203,44 @@ public class ColonyGUI {
         };
     }
 
+    private void removeTaskFromAll(String taskId) {
+        for (int i = 0; i < taskWaitModel.getRowCount(); i++) {
+            if (taskWaitModel.getValueAt(i, 0).equals(taskId)) {
+                taskWaitModel.removeRow(i); return;
+            }
+        }
+        for (int i = 0; i < taskActiveModel.getRowCount(); i++) {
+            if (taskActiveModel.getValueAt(i, 0).equals(taskId)) {
+                taskActiveModel.removeRow(i); return;
+            }
+        }
+        for (int i = 0; i < taskDoneModel.getRowCount(); i++) {
+            if (taskDoneModel.getValueAt(i, 0).equals(taskId)) {
+                taskDoneModel.removeRow(i); return;
+            }
+        }
+    }
+
     public void updateTask(String taskId, String taskType, String status) {
         SwingUtilities.invokeLater(() -> {
             String tipoPt = traduzirTaskType(taskType);
-            for (int i = 0; i < taskModel.getRowCount(); i++) {
-                if (taskModel.getValueAt(i, 0).equals(taskId)) {
-                    taskModel.setValueAt(status, i, 2);
-                    return;
-                }
+            String statusLow = status.toLowerCase();
+            
+            // Remove from current tab
+            removeTaskFromAll(taskId);
+            
+            // Add to correct tab
+            Object[] row = new Object[]{taskId, tipoPt, status};
+            if (statusLow.contains("espera") || statusLow.contains("pending") || statusLow.contains("nova") || statusLow.contains("reprovada")) {
+                taskWaitModel.addRow(row);
+            } else if (statusLow.contains("concluída") || statusLow.contains("done") || statusLow.contains("finalizada") || statusLow.contains("aprovada") || statusLow.contains("entregue")) {
+                taskDoneModel.addRow(row);
+            } else {
+                taskActiveModel.addRow(row);
             }
-            taskModel.addRow(new Object[]{taskId, tipoPt, status});
+            
+            totalTasks = taskWaitModel.getRowCount() + taskActiveModel.getRowCount() + taskDoneModel.getRowCount();
+            updateStats();
         });
     }
 

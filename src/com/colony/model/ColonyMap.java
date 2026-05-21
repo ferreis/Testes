@@ -4,8 +4,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.*;
 
 public class ColonyMap {
-    public static final int WIDTH = 1000;
-    public static final int HEIGHT = 1000;
+    public static final int WIDTH = 200;
+    public static final int HEIGHT = 200;
     private final TerrainTile[][] tiles;
     private final List<ColonyBuilding> buildings;
     private final Map<String, int[]> npcPositions;
@@ -26,26 +26,34 @@ public class ColonyMap {
         for (int y = 0; y < HEIGHT; y++) {
             for (int x = 0; x < WIDTH; x++) {
                 double h = noise(x * 0.02, y * 0.02) * 0.6
-                         + noise(x * 0.04, y * 0.04) * 0.25
-                         + noise(x * 0.08, y * 0.08) * 0.15;
-                double dx = (x - WIDTH/2.0) / (WIDTH/2.0);
-                double dy = (y - HEIGHT/2.0) / (HEIGHT/2.0);
+                        + noise(x * 0.04, y * 0.04) * 0.25
+                        + noise(x * 0.08, y * 0.08) * 0.15;
+                double dx = (x - WIDTH / 2.0) / (WIDTH / 2.0);
+                double dy = (y - HEIGHT / 2.0) / (HEIGHT / 2.0);
                 h = h * 0.7 + (dx * dx + dy * dy) * 0.5 - 0.3;
 
-                if (h < -0.3) tiles[y][x] = TerrainTile.WATER;
-                else if (h < -0.1) tiles[y][x] = TerrainTile.SAND;
-                else if (h < 0.05) tiles[y][x] = TerrainTile.GRASS;
-                else if (h < 0.15) tiles[y][x] = TerrainTile.DIRT;
-                else if (h < 0.25) tiles[y][x] = TerrainTile.FLOOR;
-                else if (h < 0.35) tiles[y][x] = TerrainTile.TREE;
-                else if (h < 0.45) tiles[y][x] = TerrainTile.STONE;
-                else tiles[y][x] = TerrainTile.MOUNTAIN;
+                if (h < -0.3)
+                    tiles[y][x] = TerrainTile.WATER;
+                else if (h < -0.1)
+                    tiles[y][x] = TerrainTile.SAND;
+                else if (h < 0.05)
+                    tiles[y][x] = TerrainTile.GRASS;
+                else if (h < 0.15)
+                    tiles[y][x] = TerrainTile.DIRT;
+                else if (h < 0.25)
+                    tiles[y][x] = TerrainTile.FLOOR;
+                else if (h < 0.35)
+                    tiles[y][x] = TerrainTile.TREE;
+                else if (h < 0.45)
+                    tiles[y][x] = TerrainTile.STONE;
+                else
+                    tiles[y][x] = TerrainTile.MOUNTAIN;
             }
         }
     }
 
     private double noise(double x, double y) {
-        int ix = (int)Math.floor(x), iy = (int)Math.floor(y);
+        int ix = (int) Math.floor(x), iy = (int) Math.floor(y);
         double fx = x - ix, fy = y - iy;
         int seed = 12345;
         double v00 = hash(ix + seed, iy + seed);
@@ -63,8 +71,13 @@ public class ColonyMap {
         return (h & 0xFFFF) / 32768.0 - 1.0;
     }
 
-    private double smoothstep(double t) { return t * t * (3 - 2 * t); }
-    private double lerp(double a, double b, double t) { return a + t * (b - a); }
+    private double smoothstep(double t) {
+        return t * t * (3 - 2 * t);
+    }
+
+    private double lerp(double a, double b, double t) {
+        return a + t * (b - a);
+    }
 
     private void placeStartingZone() {
         int cx = WIDTH / 2, cy = HEIGHT / 2;
@@ -81,16 +94,38 @@ public class ColonyMap {
     // ─── Tile access ───
 
     public TerrainTile getTile(int x, int y) {
-        if (!inBounds(x, y)) return TerrainTile.WALL;
+        if (!inBounds(x, y))
+            return TerrainTile.WALL;
         ColonyBuilding b = getBuildingAt(x, y);
         if (b != null) {
-            return b.getType().hasRoof() ? TerrainTile.WALL : TerrainTile.FLOOR;
+            if (b.getType().hasRoof()) {
+                int bx = b.getX();
+                int by = b.getY();
+                int bw = b.getType().getWidth();
+                int bh = b.getType().getHeight();
+                
+                // Door at the bottom center
+                if (x == bx + bw / 2 && y == by + bh - 1) {
+                    return TerrainTile.FLOOR; // Porta
+                }
+                
+                // Walls on the border
+                if (x == bx || x == bx + bw - 1 || y == by || y == by + bh - 1) {
+                    return TerrainTile.WALL;
+                }
+                
+                // Interior floor
+                return TerrainTile.FLOOR;
+            } else {
+                return TerrainTile.FLOOR;
+            }
         }
         return tiles[y][x];
     }
 
     public void setTile(int x, int y, TerrainTile tile) {
-        if (inBounds(x, y)) tiles[y][x] = tile;
+        if (inBounds(x, y))
+            tiles[y][x] = tile;
     }
 
     public boolean inBounds(int x, int y) {
@@ -113,21 +148,44 @@ public class ColonyMap {
             this.owner = null;
         }
 
-        public int getX() { return x; }
-        public int getY() { return y; }
-        public BuildingType getType() { return type; }
-        public int getProgress() { return progress; }
-        public void setProgress(int p) { progress = Math.min(100, p); }
-        public String getOwner() { return owner; }
-        public void setOwner(String o) { this.owner = o; }
+        public int getX() {
+            return x;
+        }
+
+        public int getY() {
+            return y;
+        }
+
+        public BuildingType getType() {
+            return type;
+        }
+
+        public int getProgress() {
+            return progress;
+        }
+
+        public void setProgress(int p) {
+            progress = Math.min(100, p);
+        }
+
+        public String getOwner() {
+            return owner;
+        }
+
+        public void setOwner(String o) {
+            this.owner = o;
+        }
     }
 
-    public List<ColonyBuilding> getBuildings() { return buildings; }
+    public List<ColonyBuilding> getBuildings() {
+        return buildings;
+    }
 
     public ColonyBuilding getBuildingAt(int x, int y) {
         for (ColonyBuilding b : buildings) {
             if (x >= b.x && x < b.x + b.type.getWidth() &&
-                y >= b.y && y < b.y + b.type.getHeight()) return b;
+                    y >= b.y && y < b.y + b.type.getHeight())
+                return b;
         }
         return null;
     }
@@ -151,7 +209,10 @@ public class ColonyMap {
         for (ColonyBuilding b : buildings) {
             if (b.getType() == type && b.getOwner() == null) {
                 double d = Math.hypot(b.x - fromX, b.y - fromY);
-                if (d < bestDist) { best = b; bestDist = d; }
+                if (d < bestDist) {
+                    best = b;
+                    bestDist = d;
+                }
             }
         }
         return best;
@@ -168,25 +229,41 @@ public class ColonyMap {
             for (int attempt = 0; attempt < 30; attempt++) {
                 int x = nearX - radius + r.nextInt(radius * 2 + 1);
                 int y = nearY - radius + r.nextInt(radius * 2 + 1);
-                if (canPlace(x, y, type)) return new int[]{x, y};
+                if (canPlace(x, y, type))
+                    return new int[] { x, y };
             }
         }
         // Fallback: random search over whole map
         for (int attempt = 0; attempt < 200; attempt++) {
             int x = 10 + r.nextInt(WIDTH - 20);
             int y = 10 + r.nextInt(HEIGHT - 20);
-            if (canPlace(x, y, type)) return new int[]{x, y};
+            if (canPlace(x, y, type))
+                return new int[] { x, y };
         }
         return null;
     }
 
     private boolean canPlace(int x, int y, BuildingType type) {
-        for (int dy = 0; dy < type.getHeight(); dy++) {
-            for (int dx = 0; dx < type.getWidth(); dx++) {
+        // Enforce 1-tile distance around the building footprint
+        for (int dy = -1; dy <= type.getHeight(); dy++) {
+            for (int dx = -1; dx <= type.getWidth(); dx++) {
                 int nx = x + dx, ny = y + dy;
-                if (!inBounds(nx, ny)) return false;
-                if (getTile(nx, ny).isBlocksMovement()) return false;
-                if (getBuildingAt(nx, ny) != null) return false;
+                
+                if (!inBounds(nx, ny)) {
+                    return false;
+                }
+                
+                // Only check for terrain blocking inside the actual footprint
+                if (dx >= 0 && dx < type.getWidth() && dy >= 0 && dy < type.getHeight()) {
+                    if (getTile(nx, ny).isBlocksMovement()) {
+                        return false;
+                    }
+                }
+                
+                // But check for overlapping buildings in the expanded footprint (1-tile padding)
+                if (getBuildingAt(nx, ny) != null) {
+                    return false;
+                }
             }
         }
         return true;
@@ -210,7 +287,8 @@ public class ColonyMap {
     public ColonyBuilding findAvailableHouse() {
         for (ColonyBuilding b : buildings) {
             if (b.getType() == BuildingType.HOUSE && b.getOwner() == null
-                && b.getProgress() >= 100) return b;
+                    && b.getProgress() >= 100)
+                return b;
         }
         return null;
     }
@@ -218,11 +296,11 @@ public class ColonyMap {
     // ─── NPC Positions ───
 
     public void setNpcPosition(String npcId, int x, int y) {
-        npcPositions.put(npcId, new int[]{x, y});
+        npcPositions.put(npcId, new int[] { x, y });
     }
 
     public int[] getNpcPosition(String npcId) {
-        return npcPositions.getOrDefault(npcId, new int[]{WIDTH/2, HEIGHT/2});
+        return npcPositions.getOrDefault(npcId, new int[] { WIDTH / 2, HEIGHT / 2 });
     }
 
     public Map<String, int[]> getAllNpcPositions() {
@@ -248,17 +326,19 @@ public class ColonyMap {
     // ─── Pathfinding ───
 
     public List<int[]> findPath(int sx, int sy, int tx, int ty) {
-        if (!inBounds(sx, sy) || !inBounds(tx, ty)) return Collections.emptyList();
-        if (sx == tx && sy == ty) return Collections.emptyList();
+        if (!inBounds(sx, sy) || !inBounds(tx, ty))
+            return Collections.emptyList();
+        if (sx == tx && sy == ty)
+            return Collections.emptyList();
 
         Queue<int[]> queue = new LinkedList<>();
         Map<String, int[]> cameFrom = new HashMap<>();
         Set<String> visited = new HashSet<>();
 
-        queue.add(new int[]{sx, sy});
+        queue.add(new int[] { sx, sy });
         visited.add(sx + "," + sy);
 
-        int[][] dirs = {{0,-1},{0,1},{-1,0},{1,0},{-1,-1},{-1,1},{1,-1},{1,1}};
+        int[][] dirs = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 }, { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 } };
 
         while (!queue.isEmpty()) {
             int[] cur = queue.poll();
@@ -266,7 +346,7 @@ public class ColonyMap {
                 List<int[]> path = new ArrayList<>();
                 String key = cur[0] + "," + cur[1];
                 while (cameFrom.containsKey(key)) {
-                    path.add(0, new int[]{cur[0], cur[1]});
+                    path.add(0, new int[] { cur[0], cur[1] });
                     int[] prev = cameFrom.get(key);
                     cur = prev;
                     key = cur[0] + "," + cur[1];
@@ -280,8 +360,8 @@ public class ColonyMap {
                     TerrainTile t = getTile(nx, ny);
                     if (!t.isBlocksMovement()) {
                         visited.add(key);
-                        cameFrom.put(key, new int[]{cur[0], cur[1]});
-                        queue.add(new int[]{nx, ny});
+                        cameFrom.put(key, new int[] { cur[0], cur[1] });
+                        queue.add(new int[] { nx, ny });
                     }
                 }
             }
@@ -295,12 +375,12 @@ public class ColonyMap {
                 for (int dy = -r; dy <= r; dy++) {
                     int nx = cx + dx, ny = cy + dy;
                     if (inBounds(nx, ny) && !getTile(nx, ny).isBlocksMovement()
-                        && getBuildingAt(nx, ny) == null) {
-                        return new int[]{nx, ny};
+                            && getBuildingAt(nx, ny) == null) {
+                        return new int[] { nx, ny };
                     }
                 }
             }
         }
-        return new int[]{cx, cy};
+        return new int[] { cx, cy };
     }
 }
