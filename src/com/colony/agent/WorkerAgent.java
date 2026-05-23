@@ -34,11 +34,18 @@ public class WorkerAgent extends Agent {
   private long currentTaskDeadline = 0L;
   private int currentTaskUrgency = 1;
   private boolean currentTaskCorrection = false;
+  private boolean restingUntilFull = false;
+  private int hungerDecayAccumulator = 0;
+
+  private static final int THIRST_DECAY_PER_TICK = 2;
 
   // Tipos de trabalho que NÃO precisam de construção
   private static final Set<String> RAW_TASKS = Set.of(
       "mine", "mining", "dig", "woodcut", "woodcutting", "chop",
       "harvest", "gather", "collect", "fish", "fishing", "water");
+  private static final int HOUSE_WOOD_COST = 50;
+  private static final int WORKSHOP_STONE_COST = 50;
+  private static final int WORKSHOP_IRON_COST = 50;
 
   protected void setup() {
     Object[] args = getArguments();
@@ -127,9 +134,15 @@ public class WorkerAgent extends Agent {
           return;
         }
 
-        int dropRate = (health < 100) ? 2 : 1;
-        fome -= dropRate;
-        sede -= dropRate;
+        sede = Math.max(0, sede - THIRST_DECAY_PER_TICK);
+
+        // Fome cai 2x mais devagar que sede (metade da taxa ao longo do tempo).
+        hungerDecayAccumulator += THIRST_DECAY_PER_TICK;
+        int hungerDrop = hungerDecayAccumulator / 2;
+        if (hungerDrop > 0) {
+          fome = Math.max(0, fome - hungerDrop);
+          hungerDecayAccumulator %= 2;
+        }
 
         if (health < 100) {
           health = Math.min(100, health + 2); // Regen lentamente
@@ -147,8 +160,8 @@ public class WorkerAgent extends Agent {
       Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
       sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
       sendGui("WORKER_STATUS:" + npcName + ":" + primarySkill.getKey()
-          + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill) + ":ocioso:" + energy + ":" + fome
-          + ":" + sede);
+          + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill) + ":ocioso:" + health
+          + ":" + energy + ":" + fome + ":" + sede);
       sendWorkerDetails();
       sendGui("LOG:" + npcName + " (" + traduzirTipo(workerType) + ") registrado.");
     }
@@ -184,14 +197,19 @@ public class WorkerAgent extends Agent {
     };
     String[] skillPool = pools[Math.min(idx, pools.length - 1)];
     SkillType primary = null;
+    List<SkillType> learned = new ArrayList<>();
     for (String sk : skillPool) {
       SkillType st = SkillType.fromKey(sk);
       if (st != null) {
         skills.setLevel(st, 1 + rand.nextInt(3));
-        if (primary == null)
-          primary = st;
+        learned.add(st);
       }
     }
+
+    if (!learned.isEmpty()) {
+      primary = learned.get(rand.nextInt(learned.size()));
+    }
+
     if ("marbleworker".equals(workerType) || "marmorist".equals(workerType)) {
       primary = SkillType.STONE_CARVER;
       skills.setLevel(primary, 2 + rand.nextInt(2));
@@ -206,6 +224,16 @@ public class WorkerAgent extends Agent {
   private void acceptTask(String taskId, String taskType) {
     String t = taskType.toLowerCase();
     boolean isRaw = RAW_TASKS.stream().anyMatch(t::contains);
+
+    if (restingUntilFull && energy < 100) {
+      sendGui("LOG:" + npcName + " está descansando até energia máxima e rejeitou tarefa " + taskId + ".");
+      sendReject(taskId);
+      return;
+    }
+
+    if (restingUntilFull && energy >= 100) {
+      restingUntilFull = false;
+    }
 
     // Rejeita se estiver muito cansado ou machucado
     if (health < 100) {
@@ -243,7 +271,8 @@ public class WorkerAgent extends Agent {
     currentTaskId = taskId;
     int skLv = skills.getLevel(taskSkill);
     sendGui("WORKER_STATUS:" + npcName + ":" + taskSkill.getKey()
-        + ":" + skLv + ":" + skills.getRank(taskSkill) + ":ocupado:" + energy + ":" + fome + ":" + sede);
+      + ":" + skLv + ":" + skills.getRank(taskSkill) + ":ocupado:" + health + ":" + energy + ":" + fome + ":"
+      + sede);
     String correctionText = currentTaskCorrection ? "correção de " : "";
     sendGui("LOG:" + npcName + " começou " + correctionText + taskSkill.getDisplayName()
         + " (" + skills.getRank(taskSkill) + " lv" + skLv + ", urgência " + currentTaskUrgency + ")");
@@ -374,6 +403,10 @@ public class WorkerAgent extends Agent {
       // Building construction: work on the target building
       ColonyBuilding target = map.getBuildingAt(taskTargetX, taskTargetY);
       if (target != null && target.getProgress() < 100) {
+        if (!ensureConstructionCostPaid(target, taskId)) {
+          return;
+        }
+
         int progressGain = 20 + Math.min(15, skills.getLevel(taskSkill) * 3) + currentTaskUrgency;
         target.setProgress(target.getProgress() + progressGain);
         sendGui("LOG:" + npcName + " construiu " + target.getType().getName()
@@ -424,12 +457,6 @@ public class WorkerAgent extends Agent {
       if (rand.nextInt(8) == 0)
         Main.resources.add("ferro", 1);
       sendGui("UPDATE_RESOURCES");
-    } else if (t.contains("build") || t.contains("construct")) {
-      if (Main.resources.consume("madeira", 2)) {
-        sendGui("UPDATE_RESOURCES");
-      } else {
-        sendGui("LOG: ⚠️ " + npcName + " construiu sem material (simulado)");
-      }
     } else if (t.contains("craft") || t.contains("carpenter")) {
       // Cria uma vara de pesca as vezes
       if (rand.nextInt(5) == 0 && Main.resources.consume("madeira", 1)) {
@@ -459,15 +486,85 @@ public class WorkerAgent extends Agent {
     currentTaskId = null;
     currentTaskCorrection = false;
     sendGui("WORKER_STATUS:" + npcName + ":" + taskSkill.getKey()
-        + ":" + newLv + ":" + skills.getRank(taskSkill) + ":ocioso:" + energy + ":" + fome + ":" + sede);
+      + ":" + newLv + ":" + skills.getRank(taskSkill) + ":ocioso:" + health + ":" + energy + ":" + fome + ":"
+      + sede);
+  }
+
+  private boolean ensureConstructionCostPaid(ColonyBuilding target, String taskId) {
+    if (target == null || target.isConstructionCostPaid()) {
+      return true;
+    }
+
+    Map<String, Integer> cost = getConstructionCost(target.getType());
+    if (cost.isEmpty()) {
+      target.setConstructionCostPaid(true);
+      return true;
+    }
+
+    for (Map.Entry<String, Integer> entry : cost.entrySet()) {
+      int available = Main.resources.get(entry.getKey());
+      if (available < entry.getValue()) {
+        sendGui("LOG: " + npcName + " não conseguiu construir " + target.getType().getName()
+            + " - faltam recursos (" + entry.getKey() + " " + available + "/" + entry.getValue() + ").");
+        sendReject(taskId);
+        return false;
+      }
+    }
+
+    Map<String, Integer> consumed = new HashMap<>();
+    for (Map.Entry<String, Integer> entry : cost.entrySet()) {
+      boolean ok = Main.resources.consume(entry.getKey(), entry.getValue());
+      if (!ok) {
+        for (Map.Entry<String, Integer> rollback : consumed.entrySet()) {
+          Main.resources.add(rollback.getKey(), rollback.getValue());
+        }
+        sendGui("LOG: " + npcName + " não conseguiu reservar materiais para " + target.getType().getName() + ".");
+        sendReject(taskId);
+        return false;
+      }
+      consumed.put(entry.getKey(), entry.getValue());
+    }
+
+    target.setConstructionCostPaid(true);
+    sendGui("LOG: " + npcName + " reservou materiais para " + target.getType().getName() + ".");
+    sendGui("UPDATE_RESOURCES");
+    return true;
+  }
+
+  private Map<String, Integer> getConstructionCost(BuildingType type) {
+    if (type == BuildingType.HOUSE) {
+      return Map.of("madeira", HOUSE_WOOD_COST);
+    }
+
+    if (isWorkshop(type)) {
+      return Map.of(
+          "pedra", WORKSHOP_STONE_COST,
+          "ferro", WORKSHOP_IRON_COST);
+    }
+
+    return Collections.emptyMap();
+  }
+
+  private boolean isWorkshop(BuildingType type) {
+    return type == BuildingType.CARPENTER
+        || type == BuildingType.MASON
+        || type == BuildingType.SMITH
+        || type == BuildingType.CRAFTER
+        || type == BuildingType.KITCHEN
+        || type == BuildingType.HOSPITAL;
   }
 
   private void autoAct() {
     ColonyMap map = Main.colonyMap;
     Random rand = new Random();
 
-    // Descansa se estiver com pouca energia (prioridade)
-    if (energy <= 30) {
+    if (energy <= 30 && !restingUntilFull) {
+      restingUntilFull = true;
+      sendGui("LOG:" + npcName + " iniciou descanso e só vai parar com 100 de energia.");
+    }
+
+    // Descansa continuamente até energia máxima
+    if (restingUntilFull) {
       ColonyBuilding home = map.getHome(npcName);
       if (home != null) {
         int hx = home.getX() + home.getType().getWidth() / 2;
@@ -488,6 +585,11 @@ public class WorkerAgent extends Agent {
         int restAmount = 5 + rand.nextInt(10);
         energy = Math.min(100, energy + restAmount);
         sleep(1500);
+      }
+
+      if (energy >= 100) {
+        restingUntilFull = false;
+        sendGui("LOG:" + npcName + " terminou o descanso com energia máxima.");
       }
       return;
     }
@@ -713,10 +815,10 @@ public class WorkerAgent extends Agent {
       toAnalyst.setContent(info);
       send(toAnalyst);
       // Atualiza energia na GUI
-      String status = (currentTaskId != null) ? "ocupado" : "ocioso";
+      String status = restingUntilFull ? "descansando" : (currentTaskId != null ? "ocupado" : "ocioso");
       sendGui("WORKER_STATUS:" + npcName + ":" + primarySkill.getKey()
           + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill)
-          + ":" + status + ":" + energy + ":" + fome + ":" + sede);
+          + ":" + status + ":" + health + ":" + energy + ":" + fome + ":" + sede);
     } catch (Exception ignored) {
     }
   }

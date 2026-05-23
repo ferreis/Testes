@@ -11,7 +11,6 @@ import java.util.*;
 public class ColonyGUI {
   private final JFrame frame;
   private final DefaultTableModel workerModel;
-  private final DefaultTableModel taskWaitModel;
   private final DefaultTableModel taskActiveModel;
   private final DefaultTableModel taskDoneModel;
   private final JTextArea logArea;
@@ -44,7 +43,7 @@ public class ColonyGUI {
     statusLabel.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
     topBar.add(statusLabel, BorderLayout.WEST);
 
-    JLabel versionLabel = new JLabel("v0.0.6");
+    JLabel versionLabel = new JLabel("v0.0.9");
     versionLabel.setForeground(new Color(150, 180, 220));
     versionLabel.setFont(new Font("Monospaced", Font.BOLD, 12));
     versionLabel.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 14));
@@ -64,7 +63,7 @@ public class ColonyGUI {
 
     // ---- WORKERS TAB ----
     workerModel = new DefaultTableModel(
-        new String[] { "Trabalhador", "Tipo", "Habilidade", "Nível", "Rank", "Status", "Energia", "Fome", "Sede" }, 0) {
+        new String[] { "Trabalhador", "Tipo", "Habilidade", "Nível", "Rank", "Status", "Vida", "Energia", "Fome", "Sede" }, 0) {
       @Override
       public boolean isCellEditable(int r, int c) {
         return false;
@@ -89,16 +88,6 @@ public class ColonyGUI {
 
     // ---- TASKS TAB (SubTabs) ----
     JTabbedPane tasksSubTabs = new JTabbedPane();
-
-    taskWaitModel = new DefaultTableModel(new String[] { "ID Tarefa", "Tipo", "Status" }, 0) {
-      @Override
-      public boolean isCellEditable(int r, int c) {
-        return false;
-      }
-    };
-    JTable waitTable = new JTable(taskWaitModel);
-    waitTable.setFillsViewportHeight(true);
-    tasksSubTabs.addTab("Em Espera", new JScrollPane(waitTable));
 
     taskActiveModel = new DefaultTableModel(new String[] { "ID Tarefa", "Tipo", "Status" }, 0) {
       @Override
@@ -151,7 +140,7 @@ public class ColonyGUI {
     JPanel bottom = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
     bottom.setBackground(new Color(50, 50, 60));
     statsLabel = new JLabel(" Trabalhadores: 0  |  Tarefas: 0  |  Mapa: "
-        + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.6");
+        + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.9");
     statsLabel.setForeground(Color.LIGHT_GRAY);
     statsLabel.setFont(new Font("Monospaced", Font.PLAIN, 11));
     bottom.add(statsLabel);
@@ -173,31 +162,43 @@ public class ColonyGUI {
   private void updateStats() {
     int w = workerModel.getRowCount();
     statsLabel.setText(" Trabalhadores: " + w + "  |  Tarefas (Total): " + totalTasks + "  |  Mapa: "
-        + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.6");
-    statusLabel.setText(" Trabalhadores Ativos: " + w + "  |  Tarefas na Fila: " + taskWaitModel.getRowCount());
+        + ColonyMap.WIDTH + "x" + ColonyMap.HEIGHT + " | v0.0.9");
+    statusLabel.setText(" Trabalhadores Ativos: " + w + "  |  Tarefas Abertas: " + taskActiveModel.getRowCount());
   }
 
   public void updateWorker(String name, String skill, String level,
-      String rank, String status, String energia, String fome, String sede) {
+      String rank, String status, String vida, String energia, String fome, String sede) {
     SwingUtilities.invokeLater(() -> {
+      String displayName = formatWorkerDisplayName(name);
       String skillPt = traduzirSkill(skill);
       for (int i = 0; i < workerModel.getRowCount(); i++) {
-        if (workerModel.getValueAt(i, 0).equals(name)) {
+        if (workerModel.getValueAt(i, 0).equals(displayName)) {
           workerModel.setValueAt(skillPt, i, 2);
           workerModel.setValueAt(level, i, 3);
           workerModel.setValueAt(rank, i, 4);
           workerModel.setValueAt(status, i, 5);
-          workerModel.setValueAt(energia, i, 6);
-          workerModel.setValueAt(fome, i, 7);
-          workerModel.setValueAt(sede, i, 8);
+          workerModel.setValueAt(vida, i, 6);
+          workerModel.setValueAt(energia, i, 7);
+          workerModel.setValueAt(fome, i, 8);
+          workerModel.setValueAt(sede, i, 9);
           updateStats();
           return;
         }
       }
       String type = traduzirTipo(skill);
-      workerModel.addRow(new Object[] { name, type, skillPt, level, rank, status, energia, fome, sede });
+      workerModel.addRow(new Object[] { displayName, type, skillPt, level, rank, status, vida, energia, fome, sede });
       updateStats();
     });
+  }
+
+  private String formatWorkerDisplayName(String workerName) {
+    if (workerName == null || workerName.isBlank()) {
+      return "";
+    }
+
+    String display = workerName.replace('_', ' ');
+    display = display.replaceAll("(?<=[a-z0-9])(?=[A-Z])", " ");
+    return display.trim().replaceAll("\\s+", " ");
   }
 
   private String traduzirTipo(String skill) {
@@ -219,12 +220,6 @@ public class ColonyGUI {
   }
 
   private void removeTaskFromAll(String taskId) {
-    for (int i = 0; i < taskWaitModel.getRowCount(); i++) {
-      if (taskWaitModel.getValueAt(i, 0).equals(taskId)) {
-        taskWaitModel.removeRow(i);
-        return;
-      }
-    }
     for (int i = 0; i < taskActiveModel.getRowCount(); i++) {
       if (taskActiveModel.getValueAt(i, 0).equals(taskId)) {
         taskActiveModel.removeRow(i);
@@ -251,7 +246,7 @@ public class ColonyGUI {
       Object[] row = new Object[] { taskId, tipoPt, status };
       if (statusLow.contains("espera") || statusLow.contains("pending") || statusLow.contains("nova")
           || statusLow.contains("reprovada")) {
-        taskWaitModel.addRow(row);
+        taskActiveModel.addRow(row);
       } else if (statusLow.contains("concluída") || statusLow.contains("done") || statusLow.contains("finalizada")
           || statusLow.contains("aprovada") || statusLow.contains("entregue")) {
         taskDoneModel.addRow(row);
@@ -259,7 +254,7 @@ public class ColonyGUI {
         taskActiveModel.addRow(row);
       }
 
-      totalTasks = taskWaitModel.getRowCount() + taskActiveModel.getRowCount() + taskDoneModel.getRowCount();
+      totalTasks = taskActiveModel.getRowCount() + taskDoneModel.getRowCount();
       updateStats();
     });
   }
@@ -296,8 +291,9 @@ public class ColonyGUI {
   public void updateWorkerDetails(String name, int health, int energy,
       String type, java.util.Map<String, Integer> skills) {
     SwingUtilities.invokeLater(() -> {
+      String displayName = formatWorkerDisplayName(name);
       StringBuilder sb = new StringBuilder();
-      sb.append("<html><b>").append(name).append("</b><hr>");
+      sb.append("<html><b>").append(displayName).append("</b><hr>");
       String corVida = health > 50 ? "#4a4" : health > 25 ? "#aa4" : "#a44";
       String corEn = energy > 50 ? "#44a" : energy > 25 ? "#aa4" : "#a44";
       sb.append("❤ <span style='color:").append(corVida).append("'>HP ").append(health).append("</span>");
@@ -311,7 +307,7 @@ public class ColonyGUI {
             .append("<td><i>").append(rank).append("</i></td></tr>");
       }
       sb.append("</table></html>");
-      workerDetails.put(name, sb.toString());
+      workerDetails.put(displayName, sb.toString());
     });
   }
 
@@ -323,6 +319,9 @@ public class ColonyGUI {
     StringBuilder sb = new StringBuilder("  RECURSOS DA COLÔNIA\n");
     sb.append("  ────────────────────\n");
     for (Map.Entry<String, Integer> e : res.getAll().entrySet()) {
+      if ("ouro".equalsIgnoreCase(e.getKey())) {
+        continue;
+      }
       String bar = "█".repeat(Math.min(e.getValue() / 2, 20));
       sb.append(String.format("  %-10s %3d  %s\n", e.getKey() + ":", e.getValue(), bar));
     }

@@ -152,6 +152,7 @@ public class ColonyMap {
     private final BuildingType type;
     private int progress;
     private String owner;
+    private boolean constructionCostPaid;
 
     public ColonyBuilding(int x, int y, BuildingType type) {
       this.x = x;
@@ -159,6 +160,7 @@ public class ColonyMap {
       this.type = type;
       this.progress = 0;
       this.owner = null;
+      this.constructionCostPaid = false;
     }
 
     public int getX() {
@@ -187,6 +189,14 @@ public class ColonyMap {
 
     public void setOwner(String o) {
       this.owner = o;
+    }
+
+    public boolean isConstructionCostPaid() {
+      return constructionCostPaid;
+    }
+
+    public void setConstructionCostPaid(boolean paid) {
+      this.constructionCostPaid = paid;
     }
   }
 

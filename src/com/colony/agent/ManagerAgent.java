@@ -11,6 +11,8 @@ import jade.wrapper.StaleProxyException;
 import com.colony.model.*;
 import com.colony.model.ColonyMap.ColonyBuilding;
 import com.colony.Main;
+import net.datafaker.Faker;
+import java.text.Normalizer;
 import java.util.*;
 import java.util.stream.*;
 
@@ -19,7 +21,11 @@ public class ManagerAgent extends Agent {
   private final List<TaskEntry> tasks = new ArrayList<>();
   private final Map<String, String> taskResults = new HashMap<>();
   private final Set<String> mappedZones = new HashSet<>();
+  private final Set<String> reservedWorkerNames = new HashSet<>();
+  private final Faker faker = new Faker(new Locale("pt", "BR"));
+  private final Random random = new Random();
   private int taskCounter = 0;
+  private long lastWorkerCreationAt = 0L;
 
   // Task types that don't need a building
   private static final Set<String> RAW_TASK_TYPES = Set.of("mine", "woodcut", "fish", "harvest", "gather");
@@ -28,7 +34,21 @@ public class ManagerAgent extends Agent {
   private static final int MAX_URGENCY = 5;
   private static final int FOOD_THRESHOLD = 30;
   private static final int WATER_THRESHOLD = 20;
-  private static final String DEFAULT_NEW_WORKER_TYPE = "builder";
+  private static final long WORKER_CREATION_COOLDOWN_MS = 5000;
+  private static final List<String> RANDOM_NEW_WORKER_TYPES = List.of(
+      "builder",
+      "miner",
+      "woodcutter",
+      "carpenter",
+      "smith",
+      "mason",
+      "marbleworker",
+      "farmer",
+      "doctor",
+      "fighter",
+      "engineer",
+      "craftsman",
+      "fisher");
 
   static class WorkerInfo {
     String name;
@@ -97,6 +117,12 @@ public class ManagerAgent extends Agent {
     addBehaviour(new TickerBehaviour(this, 10000) {
       protected void onTick() {
         requestResourceAbundanceAnalysis();
+      }
+    });
+
+    addBehaviour(new TickerBehaviour(this, 7000) {
+      protected void onTick() {
+        ensureWorkerForAvailableHouse();
       }
     });
 
@@ -190,13 +216,23 @@ public class ManagerAgent extends Agent {
       return;
     }
 
+    if (!ensureWorkerForAvailableHouse()) {
+      sendToGui("LOG:Gerente: recursos abundantes, mas sem casa concluída disponível para novo trabalhador.");
+    }
+  }
+
+  private boolean ensureWorkerForAvailableHouse() {
+    if (System.currentTimeMillis() - lastWorkerCreationAt < WORKER_CREATION_COOLDOWN_MS) {
+      return false;
+    }
+
     ColonyBuilding availableHouse = findUnassignedCompletedHouse();
     if (availableHouse == null) {
-      sendToGui("LOG:Gerente: recursos abundantes, mas sem casa concluída disponível para novo trabalhador.");
-      return;
+      return false;
     }
 
     createWorkerWithAssignedHouse(availableHouse);
+    return true;
   }
 
   private ColonyBuilding findUnassignedCompletedHouse() {
@@ -205,8 +241,10 @@ public class ManagerAgent extends Agent {
 
   private void createWorkerWithAssignedHouse(ColonyBuilding house) {
     String workerName = nextWorkerName();
+    String workerType = randomNewWorkerType();
     AgentContainer container = getContainerController();
     if (container == null) {
+      reservedWorkerNames.remove(workerName);
       sendToGui("LOG:Gerente: container JADE indisponível para criar trabalhador " + workerName + ".");
       return;
     }
@@ -216,28 +254,76 @@ public class ManagerAgent extends Agent {
       AgentController worker = container.createNewAgent(
           workerName,
           WorkerAgent.class.getName(),
-          new Object[] { DEFAULT_NEW_WORKER_TYPE });
+          new Object[] { workerType });
       worker.start();
+        lastWorkerCreationAt = System.currentTimeMillis();
 
       sendToGui("LOG:Gerente criou novo trabalhador " + workerName
+          + " (" + workerType + ")"
           + " com casa em (" + house.getX() + "," + house.getY() + ")"
           + " após detectar abundância de comida/água (" + FOOD_THRESHOLD + "/" + WATER_THRESHOLD + ").");
     } catch (StaleProxyException e) {
+      reservedWorkerNames.remove(workerName);
       house.setOwner(null);
       sendToGui("LOG:Gerente falhou ao criar trabalhador " + workerName + ": " + e.getMessage());
     }
   }
 
   private String nextWorkerName() {
-    int idx = 1;
-    while (true) {
-      String candidate = "WorkerAuto" + idx;
-      boolean exists = workers.stream().anyMatch(w -> w.name.equals(candidate));
-      if (!exists) {
+    for (int attempt = 0; attempt < 50; attempt++) {
+      String candidate = sanitizeWorkerName(faker.name().firstName() + "_" + faker.name().lastName());
+      if (isWorkerNameAvailable(candidate)) {
+        reservedWorkerNames.add(candidate);
         return candidate;
       }
-      idx++;
     }
+    
+    return "WorkerAuto" + System.currentTimeMillis();
+  }
+
+  private String sanitizeWorkerName(String raw) {
+    if (raw == null || raw.isBlank()) {
+      return "";
+    }
+
+    String normalized = Normalizer.normalize(raw, Normalizer.Form.NFD)
+        .replaceAll("\\p{M}+", "");
+    String safe = normalized.replaceAll("[^A-Za-z0-9_]", "");
+    if (safe.isBlank()) {
+      return "";
+    }
+    if (!Character.isLetter(safe.charAt(0))) {
+      safe = "W" + safe;
+    }
+    if (safe.length() > 24) {
+      safe = safe.substring(0, 24);
+    }
+    return safe;
+  }
+
+  private String randomNewWorkerType() {
+    return RANDOM_NEW_WORKER_TYPES.get(random.nextInt(RANDOM_NEW_WORKER_TYPES.size()));
+  }
+
+  private boolean isWorkerNameAvailable(String candidate) {
+    if (candidate == null || candidate.isBlank()) {
+      return false;
+    }
+
+    boolean existsInManager = workers.stream().anyMatch(w -> w.name.equals(candidate));
+    if (existsInManager) {
+      return false;
+    }
+
+    if (reservedWorkerNames.contains(candidate)) {
+      return false;
+    }
+
+    if (Main.colonyMap.getAllNpcPositions().containsKey(candidate)) {
+      return false;
+    }
+
+    return !Main.colonyMap.hasHome(candidate);
   }
 
   private void registerOrUpdateWorker(String name, String skill, int level, int x, int y, int energy) {

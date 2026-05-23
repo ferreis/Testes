@@ -10,13 +10,12 @@ public class ColonyResources {
 
   public ColonyResources() {
     resources = new ConcurrentHashMap<>();
-    resources.put("madeira", 20);
-    resources.put("pedra", 15);
-    resources.put("ferro", 5);
-    resources.put("comida", 30);
-    resources.put("agua", 30);
-    resources.put("ouro", 2);
-    resources.put("vara de pesca", 0);
+    resources.put("madeira", 450);
+    resources.put("pedra", 400);
+    resources.put("ferro", 300);
+    resources.put("comida", 50);
+    resources.put("agua", 20);
+    resources.put("vara de pesca", 1);
   }
 
   public int get(String resource) {

@@ -9,6 +9,8 @@ import jade.wrapper.StaleProxyException;
 import com.colony.model.ColonyMap;
 
 public class Main {
+	private static final int MAX_WILD_ANIMALS = 5;
+
 	public static final ColonyMap colonyMap = new ColonyMap();
 	public static final com.colony.model.ColonyResources resources = new com.colony.model.ColonyResources();
 
@@ -63,8 +65,8 @@ public class Main {
 						Thread.sleep(3000);
 					} catch (Exception e) {
 					}
-					// Spawna animais (até max 15 no mapa)
-					if (colonyMap.getAnimals().size() < 15 && rand.nextInt(3) == 0) {
+					// Spawna animais (até max 5 no mapa)
+					if (colonyMap.getAnimals().size() < MAX_WILD_ANIMALS && rand.nextInt(3) == 0) {
 						int x = rand.nextInt(ColonyMap.WIDTH);
 						int y = rand.nextInt(ColonyMap.HEIGHT);
 						if (!colonyMap.getTile(x, y).isBlocksMovement()) {
