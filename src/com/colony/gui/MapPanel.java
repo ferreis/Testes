@@ -442,6 +442,7 @@ public class MapPanel extends JPanel {
       case "militar" -> new Color(190, 70, 70);
       case "armazenamento" -> new Color(170, 160, 100);
       case "infraestrutura" -> new Color(110, 150, 190);
+      case "viário" -> new Color(125, 125, 125);
       case "comércio" -> new Color(210, 190, 70);
       default -> new Color(139, 90, 43);
     };

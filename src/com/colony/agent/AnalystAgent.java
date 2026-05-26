@@ -1,16 +1,19 @@
 package com.colony.agent;
 
-import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.core.behaviours.TickerBehaviour;
 import jade.lang.acl.ACLMessage;
 import jade.core.AID;
 import com.colony.model.*;
 import com.colony.model.ColonyMap.ColonyBuilding;
+import com.colony.model.agent.AnalystModel;
 import com.colony.Main;
 import java.util.*;
 
-public class AnalystAgent extends Agent {
+public class AnalystAgent extends ColonyAgentBase {
+  private AnalystModel analystModel;
+  private ColonyMap colonyMap;
+  private ColonyResources resources;
   private final Map<String, String> workerSkills = new HashMap<>();
   private final Map<String, Integer> workerCountBySkill = new HashMap<>();
   private final Map<String, WorkerStatus> workerStatuses = new HashMap<>();
@@ -28,7 +31,20 @@ public class AnalystAgent extends Agent {
   }
 
   protected void setup() {
-    System.out.println(getLocalName() + ": Agente Analista iniciado.");
+    registerService("analyst");
+    Object[] args = getArguments();
+    if (args != null && args.length >= 2
+        && args[0] instanceof ColonyMap
+        && args[1] instanceof ColonyResources) {
+      this.colonyMap = (ColonyMap) args[0];
+      this.resources = (ColonyResources) args[1];
+    } else {
+      this.colonyMap = Main.colonyMap;
+      this.resources = Main.resources;
+    }
+
+    this.analystModel = new AnalystModel(getLocalName());
+    System.out.println(analystModel.getName() + ": Agente " + analystModel.getRole() + " iniciado.");
 
     addBehaviour(new CyclicBehaviour() {
       public void action() {
@@ -106,14 +122,23 @@ public class AnalystAgent extends Agent {
   }
 
   private boolean isResourceAbundant() {
-    int food = Main.resources.get("comida");
-    int water = Main.resources.get("agua");
+    int food = resources.get("comida");
+    int water = resources.get("agua");
     return food > FOOD_THRESHOLD && water > WATER_THRESHOLD;
   }
 
   private String analyzeColonyNeeds() {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     StringBuilder report = new StringBuilder();
+
+    int availableWater = resources.get("agua");
+    boolean hasCompletedWell = map.getBuildings().stream()
+        .anyMatch(b -> b.getType() == BuildingType.WELL && b.getProgress() >= 100);
+    boolean hasWellInProgress = map.getBuildings().stream()
+        .anyMatch(b -> b.getType() == BuildingType.WELL && b.getProgress() < 100);
+    if (availableWater <= WATER_THRESHOLD && !hasCompletedWell && !hasWellInProgress) {
+      report.append("NEED_WELL:1|");
+    }
 
     // 1. Contar trabalhadores sem casa
     int homeless = 0;
@@ -173,6 +198,8 @@ public class AnalystAgent extends Agent {
     if (skill == null)
       return null;
     String s = skill.toLowerCase();
+    if (s.contains("oficina") || s.contains("workshop"))
+      return BuildingType.WORKSHOP;
     if (s.contains("carpenter") || s.contains("bowyer") || s.contains("wood craft"))
       return BuildingType.CARPENTER;
     if (s.contains("mason") || s.contains("stone") || s.contains("engrave"))
@@ -219,7 +246,7 @@ public class AnalystAgent extends Agent {
     }
 
     if ("build".equalsIgnoreCase(taskType)) {
-      ColonyMap.ColonyBuilding building = Main.colonyMap.getBuildingAt(targetX, targetY);
+      ColonyMap.ColonyBuilding building = colonyMap.getBuildingAt(targetX, targetY);
       if (building == null) {
         return rejection(taskId, urgency, "Construção alvo não existe no mapa.");
       }
@@ -239,7 +266,7 @@ public class AnalystAgent extends Agent {
       return approval(taskId, 100, note);
     }
 
-    if (workX < 0 || workY < 0 || !Main.colonyMap.inBounds(workX, workY)) {
+    if (workX < 0 || workY < 0 || !colonyMap.inBounds(workX, workY)) {
       return rejection(taskId, urgency, "Área de trabalho inválida.");
     }
 
@@ -374,7 +401,7 @@ public class AnalystAgent extends Agent {
   }
 
   private String analyzeTerrain() {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     int centerX = ColonyMap.WIDTH / 2;
     int centerY = ColonyMap.HEIGHT / 2;
     int radius = 90;
@@ -491,8 +518,11 @@ public class AnalystAgent extends Agent {
 
   private void sendToManager(String content) {
     try {
+      AID manager = resolveService("manager", "manager");
+      if (manager == null)
+        return;
       ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-      msg.addReceiver(new AID("manager", AID.ISLOCALNAME));
+      msg.addReceiver(manager);
       msg.setContent(content);
       send(msg);
     } catch (Exception ignored) {
@@ -501,8 +531,11 @@ public class AnalystAgent extends Agent {
 
   private void sendToGui(String content) {
     try {
+      AID gui = resolveService("gui", "gui");
+      if (gui == null)
+        return;
       ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-      msg.addReceiver(new AID("gui", AID.ISLOCALNAME));
+      msg.addReceiver(gui);
       msg.setContent(content);
       send(msg);
     } catch (Exception ignored) {

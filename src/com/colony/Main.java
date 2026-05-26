@@ -9,8 +9,6 @@ import jade.wrapper.StaleProxyException;
 import com.colony.model.ColonyMap;
 
 public class Main {
-	private static final int MAX_WILD_ANIMALS = 5;
-
 	public static final ColonyMap colonyMap = new ColonyMap();
 	public static final com.colony.model.ColonyResources resources = new com.colony.model.ColonyResources();
 
@@ -24,75 +22,54 @@ public class Main {
 
 		try {
 			// Create and start the Manager agent first
-			AgentController manager = mainContainer.createNewAgent("manager", com.colony.agent.ManagerAgent.class.getName(),
-					null);
+			AgentController manager = mainContainer.createNewAgent(
+					"manager",
+					com.colony.agent.ManagerAgent.class.getName(),
+					new Object[] { colonyMap, resources });
 			manager.start();
 
 			// Create and start the Analyst agent
-			AgentController analyst = mainContainer.createNewAgent("analyst", com.colony.agent.AnalystAgent.class.getName(),
-					null);
+			AgentController analyst = mainContainer.createNewAgent(
+					"analyst",
+					com.colony.agent.AnalystAgent.class.getName(),
+					new Object[] { colonyMap, resources });
 			analyst.start();
 
 			// Create and start the GUI agent
-			AgentController gui = mainContainer.createNewAgent("gui", com.colony.gui.GuiAgent.class.getName(), null);
+			AgentController gui = mainContainer.createNewAgent(
+					"gui",
+					com.colony.gui.GuiAgent.class.getName(),
+					new Object[] { colonyMap, resources });
 			gui.start();
+
+			// Create and start the wildlife simulation as a JADE agent
+			AgentController wildlife = mainContainer.createNewAgent(
+					"wildlife",
+					com.colony.agent.WildlifeAgent.class.getName(),
+					new Object[] { colonyMap });
+			wildlife.start();
 
 			// ─── Cria os NPCs (cada um = 1 anão) ───
 			AgentController[] workers = {
 					mainContainer.createNewAgent("Urist", com.colony.agent.WorkerAgent.class.getName(),
-							new Object[] { "builder" }),
-					mainContainer.createNewAgent("Doren", com.colony.agent.WorkerAgent.class.getName(), new Object[] { "miner" }),
+							new Object[] { "builder", colonyMap, resources }),
+					mainContainer.createNewAgent("Doren", com.colony.agent.WorkerAgent.class.getName(),
+							new Object[] { "miner", colonyMap, resources }),
 					mainContainer.createNewAgent("Logem", com.colony.agent.WorkerAgent.class.getName(),
-							new Object[] { "woodcutter" }),
+							new Object[] { "woodcutter", colonyMap, resources }),
 					mainContainer.createNewAgent("Kikrost", com.colony.agent.WorkerAgent.class.getName(),
-							new Object[] { "carpenter" }),
+							new Object[] { "carpenter", colonyMap, resources }),
 					mainContainer.createNewAgent("Stinthad", com.colony.agent.WorkerAgent.class.getName(),
-							new Object[] { "smith" }),
-					mainContainer.createNewAgent("Meng", com.colony.agent.WorkerAgent.class.getName(), new Object[] { "mason" }),
+							new Object[] { "smith", colonyMap, resources }),
+					mainContainer.createNewAgent("Meng", com.colony.agent.WorkerAgent.class.getName(),
+							new Object[] { "mason", colonyMap, resources }),
 					mainContainer.createNewAgent("Zasit", com.colony.agent.WorkerAgent.class.getName(),
-							new Object[] { "marbleworker" }),
+							new Object[] { "marbleworker", colonyMap, resources }),
 			};
 			for (AgentController w : workers)
 				w.start();
 
-			System.out.println("Todos os agentes iniciados com sucesso!");
-
-			// Thread de Animais Selvagens
-			new Thread(() -> {
-				java.util.Random rand = new java.util.Random();
-				while (true) {
-					try {
-						Thread.sleep(3000);
-					} catch (Exception e) {
-					}
-					// Spawna animais (até max 5 no mapa)
-					if (colonyMap.getAnimals().size() < MAX_WILD_ANIMALS && rand.nextInt(3) == 0) {
-						int x = rand.nextInt(ColonyMap.WIDTH);
-						int y = rand.nextInt(ColonyMap.HEIGHT);
-						if (!colonyMap.getTile(x, y).isBlocksMovement()) {
-							boolean aggro = rand.nextInt(4) == 0;
-							String type = aggro ? "Lobo" : "Cervo";
-							colonyMap.addAnimal(new com.colony.model.Animal(x, y, aggro ? 50 : 20, aggro, type));
-						}
-					}
-					// Move animais
-					for (com.colony.model.Animal a : colonyMap.getAnimals()) {
-						if (a.dead) {
-							a.rotTimer--;
-							if (a.rotTimer <= 0) {
-								colonyMap.removeAnimal(a);
-							}
-							continue;
-						}
-						int nx = a.x + rand.nextInt(3) - 1;
-						int ny = a.y + rand.nextInt(3) - 1;
-						if (colonyMap.inBounds(nx, ny) && !colonyMap.getTile(nx, ny).isBlocksMovement()) {
-							a.x = nx;
-							a.y = ny;
-						}
-					}
-				}
-			}).start();
+			System.out.println("Todos os agentes JADE iniciados com sucesso!");
 
 		} catch (StaleProxyException e) {
 			e.printStackTrace();

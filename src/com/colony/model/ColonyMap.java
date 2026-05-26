@@ -100,8 +100,12 @@ public class ColonyMap {
           tiles[cy + dy][cx + dx] = TerrainTile.FLOOR;
       }
     }
-    // Já coloca um depósito inicial
-    addBuilding(cx - 8, cy - 2, BuildingType.STOCKPILE);
+    // Já coloca um depósito inicial e um poço funcional para água.
+    ColonyBuilding stockpile = addBuilding(cx - 8, cy - 2, BuildingType.STOCKPILE);
+    stockpile.setProgress(100);
+
+    ColonyBuilding well = addBuilding(cx + 8, cy - 1, BuildingType.WELL);
+    well.setProgress(100);
   }
 
   // ─── Tile access ───
@@ -236,6 +240,23 @@ public class ColonyMap {
           best = b;
           bestDist = d;
         }
+      }
+    }
+    return best;
+  }
+
+  public ColonyBuilding findNearestCompleted(BuildingType type, int fromX, int fromY) {
+    ColonyBuilding best = null;
+    double bestDist = Double.MAX_VALUE;
+    for (ColonyBuilding b : buildings) {
+      if (b.getType() != type || b.getProgress() < 100) {
+        continue;
+      }
+
+      double d = Math.hypot(b.x - fromX, b.y - fromY);
+      if (d < bestDist) {
+        best = b;
+        bestDist = d;
       }
     }
     return best;

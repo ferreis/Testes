@@ -1,6 +1,5 @@
 package com.colony.agent;
 
-import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.core.behaviours.OneShotBehaviour;
 import jade.core.behaviours.TickerBehaviour;
@@ -8,22 +7,27 @@ import jade.lang.acl.ACLMessage;
 import jade.core.AID;
 import com.colony.model.*;
 import com.colony.model.ColonyMap.ColonyBuilding;
+import com.colony.model.agent.WorkerModel;
+import com.colony.model.construction.ConstructionCatalog;
+import com.colony.model.construction.ConstructionModel;
 import com.colony.Main;
 import java.util.*;
 
-public class WorkerAgent extends Agent {
+public class WorkerAgent extends ColonyAgentBase {
   private String npcName;
   private String workerType;
+  private ColonyMap colonyMap;
+  private ColonyResources resources;
   private int health = 100;
   private int energy = 100;
   private int fome = 100;
   private int sede = 100;
   private DwarfSkills skills = new DwarfSkills();
   private SkillType primarySkill;
+  private WorkerModel workerModel;
   private boolean regAnalyst = false;
   private boolean regManager = false;
   private String currentTaskId = null;
-  private int ticksWorked = 0;
   private int npcX = ColonyMap.WIDTH / 2 + (int) (Math.random() * 12 - 6);
   private int npcY = ColonyMap.HEIGHT / 2 + (int) (Math.random() * 12 - 6);
   private int targetX = npcX, targetY = npcY;
@@ -43,21 +47,31 @@ public class WorkerAgent extends Agent {
   private static final Set<String> RAW_TASKS = Set.of(
       "mine", "mining", "dig", "woodcut", "woodcutting", "chop",
       "harvest", "gather", "collect", "fish", "fishing", "water");
-  private static final int HOUSE_WOOD_COST = 50;
-  private static final int WORKSHOP_STONE_COST = 50;
-  private static final int WORKSHOP_IRON_COST = 50;
 
   protected void setup() {
+    registerService("worker");
     Object[] args = getArguments();
     if (args != null && args.length > 0) {
       this.workerType = args[0].toString();
     } else {
       this.workerType = "general";
     }
+
+    if (args != null && args.length >= 3
+        && args[1] instanceof ColonyMap
+        && args[2] instanceof ColonyResources) {
+      this.colonyMap = (ColonyMap) args[1];
+      this.resources = (ColonyResources) args[2];
+    } else {
+      this.colonyMap = Main.colonyMap;
+      this.resources = Main.resources;
+    }
+
     this.npcName = getLocalName();
+    this.workerModel = new WorkerModel(npcName, workerType);
     this.primarySkill = initSkills();
 
-    System.out.println(npcName + ": " + traduzirTipo(workerType) + " iniciado"
+    System.out.println(npcName + ": " + traduzirTipo(workerModel.getSpecialization()) + " iniciado"
         + " | HP:" + health + " EN:" + energy
         + " | Skill: " + primarySkill.getDisplayName()
         + " (" + skills.getRank(primarySkill) + " lv" + skills.getLevel(primarySkill) + ")");
@@ -65,16 +79,22 @@ public class WorkerAgent extends Agent {
     addBehaviour(new CyclicBehaviour() {
       public void action() {
         if (!regAnalyst) {
+          AID analyst = resolveService("analyst", "analyst");
+          if (analyst != null) {
           ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
-          m.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+          m.addReceiver(analyst);
           m.setContent("REGISTER_SKILL:" + npcName + ":" + primarySkill.getKey());
           send(m);
+          }
         }
         if (!regManager) {
+          AID manager = resolveService("manager", "manager");
+          if (manager != null) {
           ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
-          m.addReceiver(new AID("manager", AID.ISLOCALNAME));
+          m.addReceiver(manager);
           m.setContent("REGISTER_WORKER");
           send(m);
+          }
         }
 
         ACLMessage msg = receive();
@@ -157,13 +177,13 @@ public class WorkerAgent extends Agent {
 
   private void regComplete() {
     if (regAnalyst && regManager) {
-      Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+      colonyMap.setNpcPosition(npcName, npcX, npcY);
       sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
       sendGui("WORKER_STATUS:" + npcName + ":" + primarySkill.getKey()
           + ":" + skills.getLevel(primarySkill) + ":" + skills.getRank(primarySkill) + ":ocioso:" + health
           + ":" + energy + ":" + fome + ":" + sede);
       sendWorkerDetails();
-      sendGui("LOG:" + npcName + " (" + traduzirTipo(workerType) + ") registrado.");
+      sendGui("LOG:" + npcName + " (" + traduzirTipo(workerModel.getSpecialization()) + ") registrado.");
     }
   }
 
@@ -287,8 +307,11 @@ public class WorkerAgent extends Agent {
 
   private void sendReject(String taskId) {
     try {
+      AID manager = resolveService("manager", "manager");
+      if (manager == null)
+        return;
       ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-      msg.addReceiver(new AID("manager", AID.ISLOCALNAME));
+      msg.addReceiver(manager);
       msg.setContent("TASK_REJECTED:" + taskId);
       send(msg);
       currentTaskId = null;
@@ -301,6 +324,8 @@ public class WorkerAgent extends Agent {
     if (taskType == null)
       return null;
     String t = taskType.toLowerCase();
+    if (t.contains("oficina") || t.contains("workshop"))
+      return BuildingType.WORKSHOP;
     if (t.contains("carpenter") || t.contains("bowyer") || t.contains("wood craft"))
       return BuildingType.CARPENTER;
     if (t.contains("mason") || t.contains("stone") || t.contains("engrave"))
@@ -319,7 +344,7 @@ public class WorkerAgent extends Agent {
   }
 
   private void workOnTask(String taskId, SkillType taskSkill, String taskType) {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     Random rand = new Random();
     String t = taskType.toLowerCase();
     boolean isRaw = RAW_TASKS.stream().anyMatch(t::contains);
@@ -380,7 +405,7 @@ public class WorkerAgent extends Agent {
 
     // Consumo de material e lógica de pesca
     if (t.contains("fish")) {
-      if (!Main.resources.consume("vara de pesca", 1)) {
+      if (!resources.consume("vara de pesca", 1)) {
         sendGui("LOG:" + npcName + " tentou pescar mas não tem vara de pesca no armazém!");
         sendReject(taskId);
         return;
@@ -431,7 +456,6 @@ public class WorkerAgent extends Agent {
 
     int energyCost = 10 + rand.nextInt(6);
     energy = Math.max(0, energy - energyCost);
-    ticksWorked++;
     sleep(Math.min(duration, 1500));
 
     int lvGain = skills.addXp(taskSkill, xpGain);
@@ -446,21 +470,36 @@ public class WorkerAgent extends Agent {
     }
 
     // Gera recursos (ex: pesca, lenha, pedra) e gasta (ex: constrói)
+    // Base natural aumenta a cada 3 níveis: 1-3 => 1, 4-6 => 2, 7-9 => 3...
+    int gatherLevel = Math.max(1, newLv);
     if (t.contains("fish") || t.contains("farm") || t.contains("harvest") || t.contains("plant")) {
-      Main.resources.add("comida", 1 + rand.nextInt(2));
+      int foodYield = calculateGatherYield(rand, gatherLevel);
+      resources.add("comida", foodYield);
+      maybeLogGatherBonus("comida", foodYield, gatherLevel);
       sendGui("UPDATE_RESOURCES");
     } else if (t.contains("wood") || t.contains("chop")) {
-      Main.resources.add("madeira", 1 + rand.nextInt(2));
+      int woodYield = calculateGatherYield(rand, gatherLevel);
+      resources.add("madeira", woodYield);
+      maybeLogGatherBonus("madeira", woodYield, gatherLevel);
       sendGui("UPDATE_RESOURCES");
     } else if (t.contains("mine") || t.contains("dig")) {
-      Main.resources.add("pedra", 1 + rand.nextInt(2));
-      if (rand.nextInt(8) == 0)
-        Main.resources.add("ferro", 1);
+      int stoneYield = calculateGatherYield(rand, gatherLevel);
+      resources.add("pedra", stoneYield);
+      maybeLogGatherBonus("pedra", stoneYield, gatherLevel);
+
+      int ironChanceDivisor = Math.max(2, 8 - gatherTier(gatherLevel) + 1);
+      if (rand.nextInt(ironChanceDivisor) == 0) {
+        int ironYield = 1;
+        if (rand.nextDouble() < Math.min(0.40, gatherLevel * 0.03)) {
+          ironYield += 1;
+        }
+        resources.add("ferro", ironYield);
+      }
       sendGui("UPDATE_RESOURCES");
     } else if (t.contains("craft") || t.contains("carpenter")) {
       // Cria uma vara de pesca as vezes
-      if (rand.nextInt(5) == 0 && Main.resources.consume("madeira", 1)) {
-        Main.resources.add("vara de pesca", 1);
+      if (rand.nextInt(5) == 0 && resources.consume("madeira", 1)) {
+        resources.add("vara de pesca", 1);
         sendGui("UPDATE_RESOURCES");
       }
     }
@@ -472,8 +511,11 @@ public class WorkerAgent extends Agent {
     }
 
     boolean late = currentTaskDeadline > 0 && System.currentTimeMillis() > currentTaskDeadline;
+    AID manager = resolveService("manager", "manager");
+    if (manager == null)
+      return;
     ACLMessage done = new ACLMessage(ACLMessage.INFORM);
-    done.addReceiver(new AID("manager", AID.ISLOCALNAME));
+    done.addReceiver(manager);
     String messageType = late ? "TASK_TIMEOUT:" : "TASK_COMPLETE:";
     int reportX = isRaw ? actionX : npcX;
     int reportY = isRaw ? actionY : npcY;
@@ -495,14 +537,15 @@ public class WorkerAgent extends Agent {
       return true;
     }
 
-    Map<String, Integer> cost = getConstructionCost(target.getType());
+    ConstructionModel construction = ConstructionCatalog.forType(target.getType());
+    Map<String, Integer> cost = construction.getConstructionCost();
     if (cost.isEmpty()) {
       target.setConstructionCostPaid(true);
       return true;
     }
 
     for (Map.Entry<String, Integer> entry : cost.entrySet()) {
-      int available = Main.resources.get(entry.getKey());
+      int available = resources.get(entry.getKey());
       if (available < entry.getValue()) {
         sendGui("LOG: " + npcName + " não conseguiu construir " + target.getType().getName()
             + " - faltam recursos (" + entry.getKey() + " " + available + "/" + entry.getValue() + ").");
@@ -513,10 +556,10 @@ public class WorkerAgent extends Agent {
 
     Map<String, Integer> consumed = new HashMap<>();
     for (Map.Entry<String, Integer> entry : cost.entrySet()) {
-      boolean ok = Main.resources.consume(entry.getKey(), entry.getValue());
+      boolean ok = resources.consume(entry.getKey(), entry.getValue());
       if (!ok) {
         for (Map.Entry<String, Integer> rollback : consumed.entrySet()) {
-          Main.resources.add(rollback.getKey(), rollback.getValue());
+          resources.add(rollback.getKey(), rollback.getValue());
         }
         sendGui("LOG: " + npcName + " não conseguiu reservar materiais para " + target.getType().getName() + ".");
         sendReject(taskId);
@@ -531,31 +574,8 @@ public class WorkerAgent extends Agent {
     return true;
   }
 
-  private Map<String, Integer> getConstructionCost(BuildingType type) {
-    if (type == BuildingType.HOUSE) {
-      return Map.of("madeira", HOUSE_WOOD_COST);
-    }
-
-    if (isWorkshop(type)) {
-      return Map.of(
-          "pedra", WORKSHOP_STONE_COST,
-          "ferro", WORKSHOP_IRON_COST);
-    }
-
-    return Collections.emptyMap();
-  }
-
-  private boolean isWorkshop(BuildingType type) {
-    return type == BuildingType.CARPENTER
-        || type == BuildingType.MASON
-        || type == BuildingType.SMITH
-        || type == BuildingType.CRAFTER
-        || type == BuildingType.KITCHEN
-        || type == BuildingType.HOSPITAL;
-  }
-
   private void autoAct() {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     Random rand = new Random();
 
     if (energy <= 30 && !restingUntilFull) {
@@ -601,7 +621,17 @@ public class WorkerAgent extends Agent {
         moveTowards(stockpile.getX() + stockpile.getType().getWidth() / 2,
             stockpile.getY() + stockpile.getType().getHeight() / 2);
 
-      if (Main.resources.consume("agua", 1)) {
+      if (resources.get("agua") <= 0) {
+        boolean collected = collectWaterFromWell(map, rand);
+        if (!collected) {
+          sendGui("LOG: ⚠️ " + npcName + " está morrendo de sede, sem água e sem poço concluído!");
+          health -= 5;
+          sleep(1000);
+          return;
+        }
+      }
+
+      if (resources.consume("agua", 1)) {
         sede = 100;
         sendGui("LOG: 💧 " + npcName + " bebeu água no armazém.");
         sendGui("UPDATE_RESOURCES");
@@ -620,7 +650,7 @@ public class WorkerAgent extends Agent {
         moveTowards(stockpile.getX() + stockpile.getType().getWidth() / 2,
             stockpile.getY() + stockpile.getType().getHeight() / 2);
 
-      if (Main.resources.consume("comida", 1)) {
+      if (resources.consume("comida", 1)) {
         fome = 100;
         sendGui("LOG: 🍗 " + npcName + " comeu no armazém.");
         sendGui("UPDATE_RESOURCES");
@@ -641,7 +671,7 @@ public class WorkerAgent extends Agent {
         if (a.dead) {
           // Esfolar
           int meat = isHunter ? 10 : 1;
-          Main.resources.add("comida", meat);
+          resources.add("comida", meat);
           sendGui("LOG: 🥩 " + npcName + " esfolou a " + a.type + " e pegou " + meat + " de carne!");
           map.removeAnimal(a);
           sendGui("UPDATE_RESOURCES");
@@ -702,7 +732,7 @@ public class WorkerAgent extends Agent {
   }
 
   private int[] findRawWorkTile(String taskType) {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     String type = taskType.toLowerCase();
     TerrainTile firstChoice = type.contains("wood") ? TerrainTile.TREE : TerrainTile.STONE;
     TerrainTile secondChoice = type.contains("wood") ? TerrainTile.TREE : TerrainTile.MOUNTAIN;
@@ -732,8 +762,58 @@ public class WorkerAgent extends Agent {
     };
   }
 
+  private boolean collectWaterFromWell(ColonyMap map, Random rand) {
+    ColonyBuilding well = map.findNearestCompleted(BuildingType.WELL, npcX, npcY);
+    if (well == null) {
+      return false;
+    }
+
+    int wx = well.getX() + well.getType().getWidth() / 2;
+    int wy = well.getY() + well.getType().getHeight() / 2;
+    moveTowards(wx, wy);
+
+    int gathered = 2 + rand.nextInt(3);
+    resources.add("agua", gathered);
+    sendGui("LOG: 🪣 " + npcName + " coletou " + gathered + " de água no poço.");
+    sendGui("UPDATE_RESOURCES");
+    sleep(700);
+    return true;
+  }
+
+  private int gatherTier(int skillLevel) {
+    int safeLevel = Math.max(0, skillLevel);
+    return (safeLevel - 1) / 3 + 1;
+  }
+
+  private int baseGatherByLevel(int skillLevel) {
+    return Math.max(1, gatherTier(skillLevel));
+  }
+
+  private int calculateGatherYield(Random rand, int skillLevel) {
+    int base = baseGatherByLevel(skillLevel);
+    double bonusChance = Math.min(0.80, 0.08 + skillLevel * 0.04);
+    int bonus = 0;
+
+    if (rand.nextDouble() < bonusChance) {
+      bonus = 1 + rand.nextInt(Math.max(1, base));
+    }
+
+    return base + bonus;
+  }
+
+  private void maybeLogGatherBonus(String resource, int totalYield, int skillLevel) {
+    int natural = baseGatherByLevel(skillLevel);
+    if (totalYield <= natural) {
+      return;
+    }
+
+    int bonus = totalYield - natural;
+    sendGui("LOG:" + npcName + " aproveitou habilidade de coleta e ganhou +" + bonus
+        + " de " + resource + " (nível " + skillLevel + ").");
+  }
+
   private boolean hasCompletedBuilding(BuildingType type) {
-    for (ColonyBuilding building : Main.colonyMap.getBuildings()) {
+    for (ColonyBuilding building : colonyMap.getBuildings()) {
       if (building.getType() == type && building.getProgress() >= 100) {
         return true;
       }
@@ -744,28 +824,25 @@ public class WorkerAgent extends Agent {
   private void moveTowards(int tx, int ty) {
     targetX = tx;
     targetY = ty;
-    List<int[]> path = Main.colonyMap.findPath(npcX, npcY, targetX, targetY);
+    List<int[]> path = colonyMap.findPath(npcX, npcY, targetX, targetY);
 
     if (path != null && !path.isEmpty()) {
       for (int[] step : path) {
         npcX = step[0];
         npcY = step[1];
-        Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+        colonyMap.setNpcPosition(npcName, npcX, npcY);
         sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
         sleep(80);
       }
     } else {
       // Fallback (for example if already there or no path)
-      Main.colonyMap.setNpcPosition(npcName, npcX, npcY);
+      colonyMap.setNpcPosition(npcName, npcX, npcY);
       sendGui("NPC_POSITION:" + npcName + ":" + npcX + ":" + npcY);
     }
   }
 
   private void sleep(int ms) {
-    try {
-      Thread.sleep(ms);
-    } catch (InterruptedException e) {
-    }
+    doWait(Math.max(1, ms));
   }
 
   private int parseInt(String value, int fallback) {
@@ -798,7 +875,11 @@ public class WorkerAgent extends Agent {
 
   private void sendInfoToManager() {
     try {
-      hasHouse = hasHouse || Main.colonyMap.hasHome(npcName);
+      AID manager = resolveService("manager", "manager");
+      AID analyst = resolveService("analyst", "analyst");
+      if (manager == null || analyst == null)
+        return;
+      hasHouse = hasHouse || colonyMap.hasHome(npcName);
       BuildingType primaryWorkshop = workshopTypeForTask(primarySkill.getKey());
       if (primaryWorkshop != null) {
         hasWorkshop = hasCompletedBuilding(primaryWorkshop);
@@ -807,11 +888,11 @@ public class WorkerAgent extends Agent {
           + "|" + skills.getLevel(primarySkill) + "|" + npcX + "|" + npcY + "|" + energy
           + "|" + (hasHouse ? "1" : "0") + "|" + (hasWorkshop ? "1" : "0");
       ACLMessage toManager = new ACLMessage(ACLMessage.INFORM);
-      toManager.addReceiver(new AID("manager", AID.ISLOCALNAME));
+        toManager.addReceiver(manager);
       toManager.setContent(info);
       send(toManager);
       ACLMessage toAnalyst = new ACLMessage(ACLMessage.INFORM);
-      toAnalyst.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+        toAnalyst.addReceiver(analyst);
       toAnalyst.setContent(info);
       send(toAnalyst);
       // Atualiza energia na GUI
@@ -825,8 +906,11 @@ public class WorkerAgent extends Agent {
 
   private void sendGui(String content) {
     try {
+      AID gui = resolveService("gui", "gui");
+      if (gui == null)
+        return;
       ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-      msg.addReceiver(new AID("gui", AID.ISLOCALNAME));
+      msg.addReceiver(gui);
       msg.setContent(content);
       send(msg);
     } catch (Exception ignored) {

@@ -91,6 +91,12 @@ public class TaskInfo {
       case "construct":
       case "carpentry":
       case "masonry":
+      case "workshop":
+      case "oficina":
+      case "warehouse":
+      case "armazem":
+      case "road":
+      case "estrada":
         return "construction";
       case "mine":
       case "mining":

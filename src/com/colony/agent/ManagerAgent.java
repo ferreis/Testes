@@ -1,6 +1,5 @@
 package com.colony.agent;
 
-import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.core.behaviours.TickerBehaviour;
 import jade.lang.acl.ACLMessage;
@@ -10,13 +9,26 @@ import jade.wrapper.AgentController;
 import jade.wrapper.StaleProxyException;
 import com.colony.model.*;
 import com.colony.model.ColonyMap.ColonyBuilding;
+import com.colony.model.agent.ManagerModel;
 import com.colony.Main;
 import net.datafaker.Faker;
 import java.text.Normalizer;
 import java.util.*;
 import java.util.stream.*;
 
-public class ManagerAgent extends Agent {
+public class ManagerAgent extends ColonyAgentBase {
+  private enum StockProfile {
+    AGRESSIVO,
+    ECONOMICO,
+    BALANCEADO
+  }
+
+  private ManagerModel managerModel;
+  private ColonyMap colonyMap;
+  private ColonyResources resources;
+  private Map<String, Integer> minStock;
+  private Map<String, Integer> targetStock;
+  private StockProfile stockProfile = StockProfile.BALANCEADO;
   private final List<WorkerInfo> workers = new ArrayList<>();
   private final List<TaskEntry> tasks = new ArrayList<>();
   private final Map<String, String> taskResults = new HashMap<>();
@@ -34,6 +46,52 @@ public class ManagerAgent extends Agent {
   private static final int MAX_URGENCY = 5;
   private static final int FOOD_THRESHOLD = 30;
   private static final int WATER_THRESHOLD = 20;
+
+    private static final Map<String, Integer> MIN_STOCK_BALANCEADO = Map.of(
+      "madeira", 180,
+      "pedra", 160,
+      "ferro", 90,
+      "comida", 80,
+      "agua", 60,
+      "vara de pesca", 4);
+    private static final Map<String, Integer> TARGET_STOCK_BALANCEADO = Map.of(
+      "madeira", 260,
+      "pedra", 240,
+      "ferro", 140,
+      "comida", 120,
+      "agua", 100,
+      "vara de pesca", 6);
+
+    private static final Map<String, Integer> MIN_STOCK_AGRESSIVO = Map.of(
+      "madeira", 280,
+      "pedra", 260,
+      "ferro", 160,
+      "comida", 130,
+      "agua", 110,
+      "vara de pesca", 8);
+    private static final Map<String, Integer> TARGET_STOCK_AGRESSIVO = Map.of(
+      "madeira", 420,
+      "pedra", 380,
+      "ferro", 240,
+      "comida", 210,
+      "agua", 190,
+      "vara de pesca", 12);
+
+    private static final Map<String, Integer> MIN_STOCK_ECONOMICO = Map.of(
+      "madeira", 110,
+      "pedra", 100,
+      "ferro", 50,
+      "comida", 55,
+      "agua", 45,
+      "vara de pesca", 2);
+    private static final Map<String, Integer> TARGET_STOCK_ECONOMICO = Map.of(
+      "madeira", 170,
+      "pedra", 150,
+      "ferro", 90,
+      "comida", 85,
+      "agua", 75,
+      "vara de pesca", 4);
+
   private static final long WORKER_CREATION_COOLDOWN_MS = 5000;
   private static final List<String> RANDOM_NEW_WORKER_TYPES = List.of(
       "builder",
@@ -90,7 +148,22 @@ public class ManagerAgent extends Agent {
   }
 
   protected void setup() {
-    System.out.println(getLocalName() + ": Agente Gerente iniciado.");
+    registerService("manager");
+    Object[] args = getArguments();
+    if (args != null && args.length >= 2
+        && args[0] instanceof ColonyMap
+        && args[1] instanceof ColonyResources) {
+      this.colonyMap = (ColonyMap) args[0];
+      this.resources = (ColonyResources) args[1];
+    } else {
+      this.colonyMap = Main.colonyMap;
+      this.resources = Main.resources;
+    }
+
+    this.managerModel = new ManagerModel(getLocalName());
+    configureStockProfile();
+    System.out.println(managerModel.getName() + ": Agente " + managerModel.getRole() + " iniciado.");
+    sendToGui("LOG:Gerente usando perfil de estoque: " + stockProfile.name().toLowerCase());
 
     addBehaviour(new CyclicBehaviour() {
       public void action() {
@@ -123,6 +196,12 @@ public class ManagerAgent extends Agent {
     addBehaviour(new TickerBehaviour(this, 7000) {
       protected void onTick() {
         ensureWorkerForAvailableHouse();
+      }
+    });
+
+    addBehaviour(new TickerBehaviour(this, 6000) {
+      protected void onTick() {
+        ensureStockForWorkers();
       }
     });
 
@@ -204,8 +283,11 @@ public class ManagerAgent extends Agent {
   }
 
   private void requestResourceAbundanceAnalysis() {
+    AID analyst = resolveService("analyst", "analyst");
+    if (analyst == null)
+      return;
     ACLMessage msg = new ACLMessage(ACLMessage.REQUEST);
-    msg.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+    msg.addReceiver(analyst);
     msg.setContent("REQUEST_RESOURCE_ABUNDANCE");
     send(msg);
   }
@@ -218,6 +300,87 @@ public class ManagerAgent extends Agent {
 
     if (!ensureWorkerForAvailableHouse()) {
       sendToGui("LOG:Gerente: recursos abundantes, mas sem casa concluída disponível para novo trabalhador.");
+    }
+  }
+
+  private void configureStockProfile() {
+    String configuredProfile = System.getProperty("colony.stock.profile", "balanceado");
+    String normalized = configuredProfile == null ? "" : configuredProfile.trim().toLowerCase(Locale.ROOT);
+
+    switch (normalized) {
+      case "agressivo", "aggressive", "high" -> {
+        stockProfile = StockProfile.AGRESSIVO;
+        minStock = MIN_STOCK_AGRESSIVO;
+        targetStock = TARGET_STOCK_AGRESSIVO;
+      }
+      case "economico", "econômico", "economic", "low" -> {
+        stockProfile = StockProfile.ECONOMICO;
+        minStock = MIN_STOCK_ECONOMICO;
+        targetStock = TARGET_STOCK_ECONOMICO;
+      }
+      default -> {
+        stockProfile = StockProfile.BALANCEADO;
+        minStock = MIN_STOCK_BALANCEADO;
+        targetStock = TARGET_STOCK_BALANCEADO;
+      }
+    }
+  }
+
+  private void ensureStockForWorkers() {
+    boolean toppedUp = false;
+    StringBuilder replenished = new StringBuilder();
+
+    for (Map.Entry<String, Integer> entry : minStock.entrySet()) {
+      String resource = entry.getKey();
+      int minimum = entry.getValue();
+      int current = resources.get(resource);
+      if (current >= minimum) {
+        continue;
+      }
+
+      int delta = minimum - current;
+      resources.add(resource, delta);
+      toppedUp = true;
+      if (replenished.length() > 0) {
+        replenished.append(", ");
+      }
+      replenished.append(resource).append(" +").append(delta);
+    }
+
+    if (toppedUp) {
+      sendToGui("UPDATE_RESOURCES");
+      sendToGui("LOG:Gerente reforçou estoque mínimo: " + replenished);
+    }
+
+    requestProductionForTargetStock();
+  }
+
+  private void requestProductionForTargetStock() {
+    if (resources.get("madeira") < targetStock.get("madeira") && getOpenTaskCount("woodcut") == 0) {
+      createTask("stock_wood", "woodcut");
+    }
+
+    if ((resources.get("pedra") < targetStock.get("pedra") || resources.get("ferro") < targetStock.get("ferro"))
+        && getOpenTaskCount("mine") == 0) {
+      createTask("stock_mine", "mine");
+    }
+
+    if (resources.get("comida") < targetStock.get("comida") && getOpenTaskCount("fish") == 0) {
+      createTask("stock_food", "fish");
+    }
+
+    if (resources.get("vara de pesca") < targetStock.get("vara de pesca")
+        && getOpenTaskCount("craft") == 0
+        && getOpenTaskCount("carpenter") == 0) {
+      createTask("stock_rods", "craft");
+    }
+
+    boolean hasWellCompleted = colonyMap.getBuildings().stream()
+        .anyMatch(b -> b.getType() == BuildingType.WELL && b.getProgress() >= 100);
+    if (resources.get("agua") < targetStock.get("agua")
+        && !hasWellCompleted
+        && !hasIncompleteBuildFor(BuildingType.WELL)) {
+      createBuildTask(BuildingType.WELL);
     }
   }
 
@@ -236,7 +399,7 @@ public class ManagerAgent extends Agent {
   }
 
   private ColonyBuilding findUnassignedCompletedHouse() {
-    return Main.colonyMap.findAvailableHouse();
+    return colonyMap.findAvailableHouse();
   }
 
   private void createWorkerWithAssignedHouse(ColonyBuilding house) {
@@ -250,11 +413,11 @@ public class ManagerAgent extends Agent {
     }
 
     try {
-      Main.colonyMap.assignHome(workerName, house);
+      colonyMap.assignHome(workerName, house);
       AgentController worker = container.createNewAgent(
           workerName,
           WorkerAgent.class.getName(),
-          new Object[] { workerType });
+          new Object[] { workerType, colonyMap, resources });
       worker.start();
         lastWorkerCreationAt = System.currentTimeMillis();
 
@@ -319,11 +482,11 @@ public class ManagerAgent extends Agent {
       return false;
     }
 
-    if (Main.colonyMap.getAllNpcPositions().containsKey(candidate)) {
+    if (colonyMap.getAllNpcPositions().containsKey(candidate)) {
       return false;
     }
 
-    return !Main.colonyMap.hasHome(candidate);
+    return !colonyMap.hasHome(candidate);
   }
 
   private void registerOrUpdateWorker(String name, String skill, int level, int x, int y, int energy) {
@@ -438,6 +601,9 @@ public class ManagerAgent extends Agent {
   }
 
   private void sendTaskToAnalyst(TaskEntry task, boolean timeout) {
+    AID analyst = resolveService("analyst", "analyst");
+    if (analyst == null)
+      return;
     String targetType = task.target != null ? task.target.getType().name() : "NONE";
     int targetX = task.target != null ? task.target.getX() : -1;
     int targetY = task.target != null ? task.target.getY() : -1;
@@ -461,7 +627,7 @@ public class ManagerAgent extends Agent {
         requiredSkillKey(task));
 
     ACLMessage verify = new ACLMessage(ACLMessage.REQUEST);
-    verify.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+    verify.addReceiver(analyst);
     verify.setContent("VERIFY_TASK:" + payload);
     send(verify);
   }
@@ -551,7 +717,7 @@ public class ManagerAgent extends Agent {
   private void handleColonyAnalysis(String report) {
     if (report.isEmpty())
       return;
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     int tasksCreated = 0;
 
     String[] items = report.split("\\|");
@@ -564,6 +730,14 @@ public class ManagerAgent extends Agent {
         for (int i = 0; i < Math.min(2, needed); i++) {
           if (!hasIncompleteBuildFor(BuildingType.HOUSE)) {
             createBuildTask(BuildingType.HOUSE);
+            tasksCreated++;
+          }
+        }
+      } else if (item.startsWith("NEED_WELL:")) {
+        int needed = parseInt(item.split(":")[1], 1);
+        for (int i = 0; i < Math.min(1, needed); i++) {
+          if (!hasIncompleteBuildFor(BuildingType.WELL)) {
+            createBuildTask(BuildingType.WELL);
             tasksCreated++;
           }
         }
@@ -610,7 +784,7 @@ public class ManagerAgent extends Agent {
   }
 
   private boolean hasWorkshop(BuildingType type) {
-    return Main.colonyMap.getBuildings().stream()
+    return colonyMap.getBuildings().stream()
         .anyMatch(b -> b.getType() == type);
   }
 
@@ -635,7 +809,7 @@ public class ManagerAgent extends Agent {
   }
 
   private void createBuildTask(BuildingType type) {
-    ColonyMap map = Main.colonyMap;
+    ColonyMap map = colonyMap;
     int[] spot = map.findSpotFor(type);
     if (spot == null) {
       sendToGui("LOG:Gerente: não achou lugar para " + type.getName());
@@ -679,6 +853,8 @@ public class ManagerAgent extends Agent {
     }
     if (target.getType() == BuildingType.HOUSE)
       return 4;
+    if (target.getType() == BuildingType.WELL)
+      return 5;
     if (target.getType() == BuildingType.STOCKPILE)
       return 3;
     return 3;
@@ -708,6 +884,10 @@ public class ManagerAgent extends Agent {
     if (tasks.isEmpty())
       return;
 
+    AID analyst = resolveService("analyst", "analyst");
+    if (analyst == null)
+      return;
+
     StringBuilder payload = new StringBuilder("TASK_QUEUE_REPORT:");
     for (TaskEntry task : tasks) {
       if ("approved".equals(task.status))
@@ -733,7 +913,7 @@ public class ManagerAgent extends Agent {
     }
 
     ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-    msg.addReceiver(new AID("analyst", AID.ISLOCALNAME));
+    msg.addReceiver(analyst);
     msg.setContent(payload.toString());
     send(msg);
   }
@@ -759,19 +939,19 @@ public class ManagerAgent extends Agent {
         continue;
 
       if ("STONE".equals(zoneType)) {
-        Main.colonyMap.setZoneName(zoneX, zoneY, "extração de pedra");
+        colonyMap.setZoneName(zoneX, zoneY, "extração de pedra");
         if (getOpenTaskCount("mine") == 0) {
           createTask("mine", "mine");
         }
         sendToGui("LOG:Gerente definiu zona de mineração em (" + zoneX + "," + zoneY + ")");
       } else if ("WOOD".equals(zoneType)) {
-        Main.colonyMap.setZoneName(zoneX, zoneY, "extração de madeira");
+        colonyMap.setZoneName(zoneX, zoneY, "extração de madeira");
         if (getOpenTaskCount("woodcut") == 0) {
           createTask("woodcut", "woodcut");
         }
         sendToGui("LOG:Gerente definiu zona de corte de madeira em (" + zoneX + "," + zoneY + ")");
       } else if ("BUILD_ZONE".equals(zoneType)) {
-        Main.colonyMap.setZoneName(zoneX, zoneY, "construção planejada");
+        colonyMap.setZoneName(zoneX, zoneY, "construção planejada");
         sendToGui("LOG:Gerente reservou zona de construção em (" + zoneX + "," + zoneY + ")");
       }
     }
@@ -788,7 +968,8 @@ public class ManagerAgent extends Agent {
   private SkillType requiredSkill(TaskEntry task) {
     if (task.target != null) {
       return switch (task.target.getType()) {
-        case HOUSE, CARPENTER, STOCKPILE, WELL -> SkillType.CARPENTER;
+        case HOUSE, CARPENTER, WORKSHOP, STOCKPILE, WAREHOUSE, WELL -> SkillType.CARPENTER;
+        case ROAD -> SkillType.MASON;
         case MASON, CRAFTER, TRADER, HOSPITAL, BARRACKS -> SkillType.MASON;
         case SMITH -> SkillType.BLACKSMITH;
         case FARM -> SkillType.PLANTER;
@@ -827,8 +1008,11 @@ public class ManagerAgent extends Agent {
 
   private void sendToGui(String content) {
     try {
+      AID gui = resolveService("gui", "gui");
+      if (gui == null)
+        return;
       ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
-      msg.addReceiver(new AID("gui", AID.ISLOCALNAME));
+      msg.addReceiver(gui);
       msg.setContent(content);
       send(msg);
     } catch (Exception ignored) {

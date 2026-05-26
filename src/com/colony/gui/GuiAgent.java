@@ -1,18 +1,35 @@
 package com.colony.gui;
 
-import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;
 import jade.lang.acl.ACLMessage;
+import com.colony.agent.ColonyAgentBase;
+import com.colony.Main;
+import com.colony.model.ColonyMap;
+import com.colony.model.ColonyResources;
 import javax.swing.*;
 
-public class GuiAgent extends Agent {
+public class GuiAgent extends ColonyAgentBase {
   private ColonyGUI gui;
+  private ColonyMap colonyMap;
+  private ColonyResources resources;
 
   protected void setup() {
+    registerService("gui");
+    Object[] args = getArguments();
+    if (args != null && args.length >= 2
+        && args[0] instanceof ColonyMap
+        && args[1] instanceof ColonyResources) {
+      this.colonyMap = (ColonyMap) args[0];
+      this.resources = (ColonyResources) args[1];
+    } else {
+      this.colonyMap = Main.colonyMap;
+      this.resources = Main.resources;
+    }
+
     System.out.println(getLocalName() + ": Agente GUI iniciando...");
 
     SwingUtilities.invokeLater(() -> {
-      gui = new ColonyGUI();
+      gui = new ColonyGUI(colonyMap, resources);
       gui.addLog("GUI inicializada. Aguardando agentes...");
     });
 
@@ -78,7 +95,7 @@ public class GuiAgent extends Agent {
           } else if (content.startsWith("WORKER_ANALYSIS:")) {
             gui.addLog("[Analista] " + content.substring("WORKER_ANALYSIS:".length()));
           } else if (content.startsWith("UPDATE_RESOURCES")) {
-            gui.updateResources(com.colony.Main.resources);
+            gui.updateResources(resources);
           } else if (content.startsWith("TERRAIN_ANALYSIS:")) {
             String terrain = content.substring("TERRAIN_ANALYSIS:".length());
             gui.addLog("[Terreno] " + terrain);
@@ -95,7 +112,7 @@ public class GuiAgent extends Agent {
 
   private void decodeTerrainAndUpdate(String terrain) {
     // Terrain analysis is informational; resources change only via in-game actions.
-    gui.updateResources(com.colony.Main.resources);
+    gui.updateResources(resources);
   }
 
   private int parseInt(String s, int defaultVal) {

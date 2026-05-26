@@ -2,6 +2,9 @@ package com.colony.model;
 
 public enum BuildingType {
   HOUSE("Casa", 3, 3, true, "residencial"),
+  WORKSHOP("Oficina", 5, 4, true, "industrial"),
+  WAREHOUSE("Armazém", 6, 5, false, "armazenamento"),
+  ROAD("Estrada", 2, 1, false, "viário"),
   CARPENTER("Oficina de Carpintaria", 5, 4, true, "industrial"),
   MASON("Oficina de Alvenaria", 5, 4, true, "industrial"),
   SMITH("Forja", 5, 4, true, "industrial"),
@@ -46,5 +49,19 @@ public enum BuildingType {
 
   public String getZone() {
     return zone;
+  }
+
+  public boolean isWorkshopFamily() {
+    return this == WORKSHOP
+        || this == CARPENTER
+        || this == MASON
+        || this == SMITH
+        || this == CRAFTER
+        || this == KITCHEN
+        || this == HOSPITAL;
+  }
+
+  public boolean isWarehouseFamily() {
+    return this == WAREHOUSE || this == STOCKPILE;
   }
 }
